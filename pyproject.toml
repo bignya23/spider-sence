@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spider-sence"
+version = "0.0.1"
+description = "A short description of the project"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [ { name = "Bignya Gogoi", email = "you@example.com" } ]
+license = "MIT"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["agents*", "orchestrator*", "data*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]

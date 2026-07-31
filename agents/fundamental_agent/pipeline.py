@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Fundamental Agent Pipeline.
+
+Runs the full fundamental analysis pipeline for a given stock symbol:
+  1. Fetch company data from screener.in and export to Excel + JSONL
+  2. Compute derived fundamentals from the JSONL and save the derived JSON
+
+Usage:
+  python3 -m agents.fundamental_agent.pipeline RELIANCE
+  python3 -m agents.fundamental_agent.pipeline RELIANCE --skip-fetch
+  python3 -m agents.fundamental_agent.pipeline RELIANCE --consolidated
+
+After installing the project (pip install -e .), you can also run:
+  spider-fundamental RELIANCE
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+
+from agents.fundamental_agent.screener_output import export_company, write_jsonl_from_excel
+from agents.fundamental_agent.screener_enricher import load_jsonl, build_lookup, compute_derivatives, save_result
+
+logger = logging.getLogger(__name__)
+
+
+def _try_generate_report(symbol: str, exports_dir: Path, config_path: Optional[Path]) -> Optional[Path]:
+    """Attempt to generate an LLM report; return path or None on failure."""
+    try:
+        from agents.fundamental_agent.report_generator import run_report_generation
+        return run_report_generation(symbol, exports_dir=exports_dir, config_path=config_path)
+    except SystemExit:
+        # Config validation failed — skip gracefully
+        return None
+    except Exception as exc:
+        logger.warning("Report generation skipped: %s", exc)
+        return None
+
+DEFAULT_EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+
+
+def run_pipeline(
+    symbol: str,
+    *,
+    exports_dir: Path = DEFAULT_EXPORTS_DIR,
+    skip_fetch: bool = False,
+    consolidated: bool = False,
+    generate_report: bool = False,
+    config_path: Optional[Path] = None,
+) -> Path:
+    """Run the full fundamental agent pipeline.
+
+    Args:
+        symbol: Stock symbol (e.g. RELIANCE).
+        exports_dir: Directory where exports are stored.
+        skip_fetch: If True, skip the screener.in fetch step and only enrich
+            the existing JSONL.
+        consolidated: If True, fetch the consolidated company page.
+        generate_report: If True, generate an LLM fundamental report after
+            computing derivatives.
+        config_path: Optional path to an LLM config JSON file for report
+            generation.
+
+    Returns:
+        Path to the saved derived JSON file.
+    """
+    symbol = symbol.strip().upper()
+    exports = Path(exports_dir)
+    exports.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Stage 1: Fetch from screener.in -> Excel + JSONL
+    # ------------------------------------------------------------------
+    excel_path = exports / symbol / f"{symbol}.xlsx"
+    jsonl_path = exports / symbol / f"{symbol.lower()}.jsonl"
+
+    if skip_fetch:
+        if not jsonl_path.exists() and not excel_path.exists():
+            logger.error(
+                "Skipping fetch but no existing data found for %s in %s",
+                symbol,
+                exports / symbol,
+            )
+            raise SystemExit(2)
+        logger.info("Skipping fetch step; using existing data for %s", symbol)
+    else:
+        logger.info("Stage 1: Fetching %s from screener.in ...", symbol)
+        t0 = time.time()
+        try:
+            excel_path = export_company(symbol, exports)
+            logger.info("  Excel saved: %s", excel_path)
+        except Exception as exc:
+            logger.error("Failed to fetch company data for %s: %s", symbol, exc)
+            raise
+
+        # Generate JSONL from the Excel if it wasn't already created
+        if not jsonl_path.exists():
+            try:
+                jsonl_path = write_jsonl_from_excel(excel_path)
+                logger.info("  JSONL saved: %s", jsonl_path)
+            except Exception as exc:
+                logger.error("Failed to write JSONL: %s", exc)
+                raise
+
+        elapsed = time.time() - t0
+        logger.info("Stage 1 complete (%.1fs)", elapsed)
+
+    # ------------------------------------------------------------------
+    # Stage 2: Enrich JSONL -> derived JSON
+    # ------------------------------------------------------------------
+    logger.info("Stage 2: Computing derived fundamentals for %s ...", symbol)
+
+    # locate JSONL
+    jsonl1 = exports / symbol / f"{symbol.lower()}.jsonl"
+    jsonl2 = exports / symbol / f"{symbol}.jsonl"
+    if jsonl1.exists():
+        jpath = jsonl1
+    elif jsonl2.exists():
+        jpath = jsonl2
+    else:
+        logger.error("JSONL file not found for %s in %s", symbol, exports / symbol)
+        raise SystemExit(2)
+
+    items = load_jsonl(jpath)
+    logger.info("  Loaded %d items from %s", len(items), jpath.name)
+
+    lookup = build_lookup(items)
+    result = compute_derivatives(lookup, symbol)
+    outp = save_result(symbol, result, exports)
+    logger.info("  Derived JSON saved: %s", outp)
+    logger.info("Stage 2 complete.")
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    deriv = result.get("calculated_fundamental_derivatives", {})
+    raw = result.get("raw_baseline_inputs", {})
+    qual = result.get("extracted_qualitative_context", {})
+
+    print("\n" + "=" * 60)
+    print(f"  FUNDAMENTAL AGENT PIPELINE — {symbol}")
+    print("=" * 60)
+    print(f"  Data as of: {result.get('data_as_of')}")
+    print("-" * 60)
+    print("  Raw Baseline Inputs:")
+    for k, v in raw.items():
+        print(f"    {k:<35} {v}")
+    print("-" * 60)
+    print("  Calculated Derivatives:")
+    for section, values in deriv.items():
+        print(f"    [{section}]")
+        for k, v in values.items():
+            print(f"      {k:<33} {v}")
+    print("-" * 60)
+    print("  Qualitative Context:")
+    print(f"    Pros: {qual.get('verified_pros', [])}")
+    print(f"    Cons: {qual.get('verified_cons', [])}")
+    print("=" * 60)
+    print(f"  Output: {outp}")
+    print("=" * 60 + "\n")
+
+    # ------------------------------------------------------------------
+    # Stage 3 (optional): Generate LLM report
+    # ------------------------------------------------------------------
+    report_path = None
+    if generate_report:
+        logger.info("Stage 3: Generating LLM fundamental report for %s ...", symbol)
+        report_path = _try_generate_report(symbol, exports, config_path)
+        if report_path:
+            logger.info("Stage 3 complete.")
+        else:
+            logger.info("Stage 3 skipped (no LLM config or error).")
+
+    # Return a structured result so callers (clients/HTTP) can see both
+    # the derived JSON and the optional report path.
+    if report_path:
+        return {"derived_json": str(outp), "report_path": str(report_path)}
+    return {"derived_json": str(outp)}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run the full fundamental agent pipeline (fetch + enrich)."
+    )
+    parser.add_argument("symbol", help="Stock symbol (e.g. RELIANCE)")
+    parser.add_argument(
+        "--exports-dir",
+        default=str(DEFAULT_EXPORTS_DIR),
+        help="Directory to store exports (default: agents/fundamental_agent/exports)",
+    )
+    parser.add_argument(
+        "--skip-fetch",
+        action="store_true",
+        help="Skip the screener.in fetch step; only enrich existing JSONL",
+    )
+    parser.add_argument(
+        "--consolidated",
+        action="store_true",
+        help="Fetch the consolidated company page from screener.in",
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate an LLM fundamental analysis report after enrichment",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to LLM config JSON file (for --report)",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    run_pipeline(
+        args.symbol,
+        exports_dir=Path(args.exports_dir),
+        skip_fetch=args.skip_fetch,
+        consolidated=args.consolidated,
+        generate_report=args.report,
+        config_path=Path(args.config) if args.config else None,
+    )
+
+
+if __name__ == "__main__":
+    main()

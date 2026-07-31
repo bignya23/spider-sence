@@ -49,6 +49,51 @@ def parse_number(s: Any) -> Optional[float]:
         return None
 
 
+def parse_qualitative_metric(text: str) -> Dict[str, Any]:
+    """Parse a qualitative pro/con string into structured pieces.
+
+    Returns a dict with the original text plus optional `period_years` and
+    `value_pct` when those can be extracted.
+    """
+    period_years = None
+    value_pct = None
+    # look for patterns like '3 year', '5-years', '3 Yr', etc.
+    m = re.search(r"(\d+)\s*(?:-?year|yr|yrs)\b", text, re.IGNORECASE)
+    if m:
+        try:
+            period_years = int(m.group(1))
+        except Exception:
+            period_years = None
+    v = re.search(r"(-?\d+(?:\.\d+)?)\s*%", text)
+    if v:
+        try:
+            value_pct = float(v.group(1))
+        except Exception:
+            value_pct = None
+    return {"text": text, "period_years": period_years, "value_pct": value_pct}
+
+
+def parse_high_low(raw: Any) -> tuple[Optional[float], Optional[float]]:
+    """Parse a 'High / Low' string like '1728 / 1027' into two floats.
+
+    Returns (high, low) where either value may be None if absent or
+    unparsable.
+    """
+    if raw is None:
+        return None, None
+    text = str(raw)
+    # Remove commas then find all numeric tokens (integers or floats)
+    nums = re.findall(r"-?[0-9]+(?:\.[0-9]+)?", text.replace(',', ''))
+    try:
+        if len(nums) >= 2:
+            return float(nums[0]), float(nums[1])
+        if len(nums) == 1:
+            return float(nums[0]), None
+    except Exception:
+        return None, None
+    return None, None
+
+
 def load_jsonl(path: Path) -> list[Dict[str, Any]]:
     items = []
     with path.open('r', encoding='utf8') as fh:
@@ -121,6 +166,21 @@ def build_lookup(items: list[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, A
                     overview[k.strip()] = parse_number(v.strip()) if parse_number(v.strip()) is not None else v.strip()
     # attach overview
     lookup['_overview'] = overview
+    # Intercept qualitative text cleanly
+    lookup['_qualitative'] = {'pros': [], 'cons': []}
+    for it in items:
+        meta = it.get('metadata', {}) or {}
+        if meta.get('sheet') == 'Pros_Cons' and meta.get('period') == 'Text':
+            val = it.get('text', '').split('=')[-1].strip()
+            # skip bare numeric artifacts (e.g. "3.06"); qualitative text is prose
+            if val and parse_number(val) is not None and re.fullmatch(r"[\d.,\s%+-]+", val):
+                continue
+            parsed_q = parse_qualitative_metric(val)
+            if meta.get('metric') == 'Pros':
+                lookup['_qualitative']['pros'].append(parsed_q)
+            elif meta.get('metric') == 'Cons':
+                lookup['_qualitative']['cons'].append(parsed_q)
+
     return lookup
 
 
@@ -157,11 +217,13 @@ def get_value(lookup: Dict[str, Any], sheet: str, metric: str, period: Optional[
         if keys:
             matches = difflib.get_close_matches(metric, keys, n=1, cutoff=0.6)
             if matches:
+                logging.info("Fuzzy-matched metric %r -> %r (sheet=%s)", metric, matches[0], sheet)
                 m = s.get(matches[0])
         # substring fallback
         if not m:
             for k in keys:
                 if metric.lower() in k.lower():
+                    logging.info("Substring-matched metric %r -> %r (sheet=%s)", metric, k, sheet)
                     m = s.get(k)
                     break
     if not m:
@@ -192,6 +254,7 @@ def get_value(lookup: Dict[str, Any], sheet: str, metric: str, period: Optional[
         period_keys = [str(k) for k in m.keys()]
         matches = difflib.get_close_matches(str(period), period_keys, n=1, cutoff=0.6)
         if matches:
+            logging.info("Fuzzy-matched period %r -> %r for metric %r (sheet=%s)", period, matches[0], metric, sheet)
             val = m.get(matches[0])
     return val if isinstance(val, (int, float)) else parse_number(val)
 
@@ -214,7 +277,7 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
     net_ttm = get_value(lookup, 'Profit_Loss', 'Net Profit+', 'TTM')
     net_2019 = get_value(lookup, 'Profit_Loss', 'Net Profit+', 'Mar 2019')
 
-    def cagr(start, end, years=7.5):
+    def cagr(start, end, years: float):
         try:
             if start is None or end is None:
                 return None
@@ -224,14 +287,25 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
         except Exception:
             return None
 
-    sales_cagr = cagr(sales_2019, sales_ttm)
-    net_cagr = cagr(net_2019, net_ttm)
+    # compute elapsed years from Mar 31, 2019 to today (approximate)
+    try:
+        start_date = datetime(2019, 3, 31).date()
+        years_elapsed = (datetime.utcnow().date() - start_date).days / 365.25
+        if years_elapsed <= 0:
+            years_elapsed = 7.5
+    except Exception:
+        years_elapsed = 7.5
+
+    sales_cagr = cagr(sales_2019, sales_ttm, years_elapsed)
+    net_cagr = cagr(net_2019, net_ttm, years_elapsed)
 
     sales_pct = round(sales_cagr * 100, 2) if sales_cagr is not None else None
     net_pct = round(net_cagr * 100, 2) if net_cagr is not None else None
     growth_alignment_status = None
     if sales_pct is not None and net_pct is not None:
-        if sales_pct > net_pct * 1.1:
+        if net_pct is not None and net_pct < 0:
+            growth_alignment_status = 'PROFIT_DECLINING'
+        elif sales_pct > net_pct * 1.1:
             growth_alignment_status = 'SALES_OUTPACING_PROFIT'
         elif net_pct > sales_pct * 1.1:
             growth_alignment_status = 'PROFIT_OUTPACING_SALES'
@@ -245,28 +319,46 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
     # try direct overview fields
     for key in ('Stock P/E', 'P/E', 'Stock P/E (TTM)', 'Stock P/E (Value)'):
         if key in overview:
-            pe = parse_number(overview[key]) or overview[key]
+            parsed = parse_number(overview[key])
+            pe = parsed if parsed is not None else overview[key]
             break
+    # warn if exact 2019 baseline not found for CAGR inputs
+    if 'Mar 2019' not in lookup.get('Profit_Loss', {}).get('Sales+', {}):
+        logging.warning('Exact period Mar 2019 not found for Sales+; CAGR may use fuzzy-matched period')
     # fallback to sheet search
     if pe is None:
         pe = get_value(lookup, 'Overview', 'Stock P/E', 'Value')
 
     dividend_yield = None
-    for key in ('Dividend yield', 'Dividend Yield', 'Dividend yield %', 'Dividend'): 
+    for key in ('Dividend yield', 'Dividend Yield', 'Dividend yield %', 'Dividend'):
         if key in overview:
-            dividend_yield = parse_number(overview[key]) or overview[key]
+            parsed = parse_number(overview[key])
+            dividend_yield = parsed if parsed is not None else overview[key]
             break
+    # fallback to sheet search
+    if dividend_yield is None:
+        dividend_yield = get_value(lookup, 'Overview', 'Dividend Yield', 'Value')
+
+    # Raw baseline inputs (absolute data points for audit trail)
+    current_price = get_value(lookup, 'Overview', 'Current Price', 'Value')
+    raw_high_low = lookup.get('_overview', {}).get('High / Low') or get_value(lookup, 'Overview', 'High / Low', 'Value')
+    week_52_high, week_52_low = parse_high_low(raw_high_low)
+    market_cap = get_value(lookup, 'Overview', 'Market Cap', 'Value')
+    book_value = get_value(lookup, 'Overview', 'Book Value', 'Value')
+    face_value = get_value(lookup, 'Overview', 'Face Value', 'Value')
 
     peg_proxy = None
-    if pe is not None and net_pct is not None and net_pct != 0:
-        try:
+    try:
+        if pe is not None and isinstance(pe, (int, float)) and pe > 0 and net_pct is not None and net_pct != 0:
             peg_proxy = float(pe) / float(net_pct)
-        except Exception:
-            peg_proxy = None
+    except Exception:
+        peg_proxy = None
 
     pricing_premium_bracket = None
     if peg_proxy is not None:
-        if peg_proxy > 20:
+        if peg_proxy < 0:
+            pricing_premium_bracket = 'NEGATIVE_GROWTH_DISTORTION'
+        elif peg_proxy > 20:
             pricing_premium_bracket = 'EXTREME_GROWTH_PREMIUM'
         elif peg_proxy > 10:
             pricing_premium_bracket = 'HIGH_GROWTH_PREMIUM'
@@ -274,22 +366,29 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
             pricing_premium_bracket = 'MODERATE_GROWTH_PREMIUM'
         else:
             pricing_premium_bracket = 'FAIR_VALUE'
+    elif pe is not None and isinstance(pe, (int, float)) and pe <= 0:
+        pricing_premium_bracket = 'LOSS_MAKING_UNDEFINED'
 
     # Pillar C
     borrowings = get_value(lookup, 'Balance_Sheet', 'Borrowings+', 'Mar 2026')
     reserves = get_value(lookup, 'Balance_Sheet', 'Reserves', 'Mar 2026')
     if borrowings is None:
-        debt_to_reserves = 0.0
-    else:
         debt_to_reserves = None
-        if reserves not in (None, 0):
+    else:
+        if reserves in (None, 0):
+            debt_to_reserves = None
+        else:
             try:
                 debt_to_reserves = float(borrowings) / float(reserves)
             except Exception:
                 debt_to_reserves = None
 
-    roce = get_value(lookup, 'Ratios', 'ROCE', 'Mar 2026') or get_value(lookup, 'Ratios', 'ROCE %', 'Mar 2026')
-    roe = get_value(lookup, 'Ratios', 'ROE', 'Mar 2026') or get_value(lookup, 'Ratios', 'ROE %', 'Mar 2026')
+    roce = get_value(lookup, 'Overview', 'ROCE', 'Value')
+    if roce is None:
+        roce = get_value(lookup, 'Ratios', 'ROCE %', 'Mar 2026')
+    roe = get_value(lookup, 'Overview', 'ROE', 'Value')
+    if roe is None:
+        roe = get_value(lookup, 'Ratios', 'ROE %', 'Mar 2026')
     cap_prod_roce = round(float(roce), 2) if roce is not None else None
     cap_prod_roe = round(float(roe), 2) if roe is not None else None
 
@@ -321,7 +420,7 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
         if a is None or b is None:
             return None
         try:
-            return float(a) - float(b)
+            return round(float(a) - float(b), 2)
         except Exception:
             return None
 
@@ -339,25 +438,25 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
             institutional_flow_pattern = 'MIXED'
 
     # Qualitative
-    pros = []
-    cons = []
-    # try to extract pros/cons from Pros_Cons sheet
-    pros_list = lookup.get('Pros_Cons', {})
-    # pros_list likely has metric names as keys; iterate values
-    for k, periods in pros_list.items():
-        for p, v in periods.items():
-            # v might be string
-            if isinstance(v, str):
-                if 'Pros' in k or 'Pros' in str(v):
-                    pros.append(v)
-                if 'Cons' in k or 'Cons' in str(v):
-                    cons.append(v)
-
-    # fallback: check overview pros/cons in lookup text
+    pros = lookup.get('_qualitative', {}).get('pros', [])
+    cons = lookup.get('_qualitative', {}).get('cons', [])
     # assemble result
     result = {
         'symbol': symbol.upper(),
         'data_as_of': datetime.utcnow().date().isoformat(),
+        'raw_baseline_inputs': {
+            'current_price': float(current_price) if current_price is not None else None,
+            'week_52_high': float(week_52_high) if week_52_high is not None else None,
+            'week_52_low': float(week_52_low) if week_52_low is not None else None,
+            'market_cap': float(market_cap) if market_cap is not None else None,
+            'book_value': float(book_value) if book_value is not None else None,
+            'face_value': float(face_value) if face_value is not None else None,
+            'total_borrowings_mar2026': float(borrowings) if borrowings is not None else None,
+            'total_reserves_mar2026': float(reserves) if reserves is not None else None,
+            'operating_cash_flow_mar2026': float(cfo) if cfo is not None else None,
+            'free_cash_flow_mar2026': float(fcf) if fcf is not None else None,
+            'operating_profit_mar2026': float(operating_profit) if operating_profit is not None else None,
+        },
         'calculated_fundamental_derivatives': {
             'growth_velocity_cagr': {
                 'sales_7year_trajectory_pct': sales_pct,
@@ -391,6 +490,53 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
         'extracted_qualitative_context': {
             'verified_pros': pros,
             'verified_cons': cons,
+        },
+        'field_definitions': {
+            'raw_baseline_inputs': {
+                'current_price': 'Closing market price of a single share on the date of extraction.',
+                'week_52_high': 'Highest transaction price recorded over the trailing 52-week period.',
+                'week_52_low': 'Lowest transaction price recorded over the trailing 52-week period.',
+                'market_cap': 'Total market capitalization; aggregate market value of all outstanding shares.',
+                'book_value': 'Net asset value per share; total assets minus liabilities divided by shares outstanding.',
+                'face_value': 'Nominal or par value of a share as stated in the corporate charter.',
+                'total_borrowings_mar2026': 'Total long-term and short-term debt obligations on the balance sheet as of Mar 2026.',
+                'total_reserves_mar2026': 'Accumulated retained earnings and surplus reserves as of Mar 2026.',
+                'operating_cash_flow_mar2026': 'Net cash generated from core business operations as of Mar 2026.',
+                'free_cash_flow_mar2026': 'Cash remaining after CapEx deductions from operating cash flow as of Mar 2026.',
+                'operating_profit_mar2026': 'Core operational earnings before interest, taxes, or depreciation as of Mar 2026.',
+            },
+            'growth_velocity_cagr': {
+                'sales_7year_trajectory_pct': 'Compound Annual Growth Rate (CAGR) of revenue over a 7-year timeline.',
+                'net_profit_7year_trajectory_pct': 'CAGR of net bottom-line profit over a 7-year timeline.',
+                'growth_alignment_status': 'Flag identifying margin trends (SALES_OUTPACING_PROFIT, PROFIT_OUTPACING_SALES, or IN_LINE).',
+            },
+            'valuation_realism': {
+                'static_pe_ratio': 'Price-to-Earnings multiple; market premium relative to current earnings per share.',
+                'peg_ratio_proxy': 'P/E divided by 7-Year Net Profit CAGR; normalizes valuation against growth.',
+                'dividend_yield_pct': 'Annual dividend income per share divided by current stock price.',
+                'pricing_premium_bracket': 'Categorization of growth pricing boundaries (EXTREME/HIGH/MODERATE GROWTH_PREMIUM or FAIR_VALUE).',
+            },
+            'solvency_and_leverage': {
+                'debt_to_reserves_leverage': 'Absolute borrowings divided by reserves; evaluates financial resilience and default risk.',
+                'capital_productivity_roce_pct': 'Return on Capital Employed; efficiency of all deployed capital in generating profit.',
+                'capital_productivity_roe_pct': 'Return on Equity; compounding efficiency of shareholders equity funds.',
+                'balance_sheet_safety_status': 'Safety bracket based on leverage (SAFE_FORTRESS, WATCHED, or HIGH_LEVERAGE).',
+            },
+            'liquidity_earnings_quality': {
+                'cash_conversion_efficiency_pct': 'Operating cash flow divided by operating profit; verifies paper profits materialize as cash.',
+                'fcf_to_cfo_efficiency_pct': 'Share of operating cash flows converted into liquid free cash flow.',
+                'accounting_cash_realization_status': 'Earnings quality classification (HEALTHY_LIQUIDITY_REALIZATION or POOR_REALIZATION).',
+            },
+            'smart_money_momentum_qoq': {
+                'promoter_stake_delta_pct': 'Quarter-over-quarter ownership percentage shift by founders/insiders.',
+                'fii_stake_delta_pct': 'QoQ ownership percentage shift by Foreign Institutional Investors.',
+                'dii_stake_delta_pct': 'QoQ ownership percentage shift by Domestic Institutional Investors.',
+                'institutional_flow_pattern': 'Flag identifying supply absorption behavior in the public float.',
+            },
+            'extracted_qualitative_context': {
+                'verified_pros': 'Array of corporate strengths algorithmically verified by Screener parameters.',
+                'verified_cons': 'Array of balance sheet vulnerabilities algorithmically highlighted by Screener parameters.',
+            },
         },
     }
 

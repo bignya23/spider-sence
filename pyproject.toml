@@ -12,6 +12,14 @@ authors = [ { name = "Bignya Gogoi", email = "you@example.com" } ]
 license = "MIT"
 dependencies = []
 
+[project.scripts]
+# Fundamental Agent CLI commands
+spider-fundamental = "agents.fundamental_agent.pipeline:main"
+spider-fundamental-report = "agents.fundamental_agent.report_generator:main"
+spider-screener-fetch = "agents.fundamental_agent.screener_output:main"
+spider-screener-enrich = "agents.fundamental_agent.screener_enricher:main"
+spider-mcp = "orchestrator.mcp_server:main"
+
 [tool.setuptools.packages.find]
 include = ["agents*", "orchestrator*", "data*"]
 

@@ -73,27 +73,3 @@ class LLMClient:
         # As last resort, convert response to JSON string
         return json.dumps(resp)
 
-        # Response formats vary; try common locations
-        # 1) data.get('output') -> list of strings
-        if isinstance(data, dict):
-            if "output" in data and isinstance(data["output"], list):
-                # join textual output parts
-                parts = [p for p in data["output"] if isinstance(p, str)]
-                if parts:
-                    return "\n".join(parts)
-            # 2) choices -> message -> content
-            choices = data.get("choices")
-            if choices and isinstance(choices, list):
-                first = choices[0]
-                if isinstance(first, dict):
-                    # older style: first['message']['content']
-                    msg = first.get("message") or {}
-                    content = msg.get("content")
-                    if isinstance(content, str):
-                        return content
-                    # or first['text']
-                    if "text" in first and isinstance(first["text"], str):
-                        return first["text"]
-
-        # fallback: return raw JSON string
-        return json.dumps(data)

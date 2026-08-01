@@ -1,4 +1,8 @@
-"""Fetch screener.in company data, parse HTML, and export to Excel."""
+"""Fetch screener.in company data, parse HTML, and export to Excel + JSONL.
+
+This module was moved under the MCP server folder so the screener MCP is
+self-contained.
+"""
 
 from __future__ import annotations
 
@@ -10,14 +14,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+import json
+import math
+import re
+
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup, Tag 
-import json
-import re
-import math
+from bs4 import BeautifulSoup, Tag
 
 from orchestrator.output_paths import ensure_category_directory, get_companies_root, normalise_symbol
+
 
 BASE_URL = "https://www.screener.in"
 DEFAULT_HEADERS = {
@@ -31,7 +37,12 @@ DEFAULT_HEADERS = {
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "companies"
 
 
-def fetch_company_page(session: requests.Session, symbol: str, *, consolidated: bool = False) -> str:
+def fetch_company_page(
+    session: requests.Session,
+    symbol: str,
+    *,
+    consolidated: bool = False,
+) -> str:
     symbol = symbol.strip().upper()
     path = f"/company/{symbol}/consolidated/" if consolidated else f"/company/{symbol}/"
     url = f"{BASE_URL}{path}"
@@ -42,17 +53,19 @@ def fetch_company_page(session: requests.Session, symbol: str, *, consolidated: 
             response.raise_for_status()
             return response.text
         except requests.exceptions.HTTPError as he:
-            # 404 -> not found: stop retrying
             if response.status_code == 404:
                 logging.debug("Received 404 for %s", url)
                 raise ValueError(f"Symbol not found or page missing: {symbol} (url: {url})") from he
             last_exc = he
-            logging.warning("HTTP error fetching %s (attempt %s): %s", url, attempt, he)
+            logging.warning(
+                "HTTP error fetching %s (attempt %s): %s", url, attempt, he
+            )
         except requests.exceptions.RequestException as rexc:
             last_exc = rexc
-            logging.warning("Network error fetching %s (attempt %s): %s", url, attempt, rexc)
+            logging.warning(
+                "Network error fetching %s (attempt %s): %s", url, attempt, rexc
+            )
         time.sleep(1 * attempt)
-    # after retries
     raise RuntimeError(f"Failed to fetch company page for {symbol} after retries") from last_exc
 
 
@@ -127,7 +140,6 @@ def _section_tables(section_id: str, soup: BeautifulSoup) -> list[tuple[list[str
     section = soup.find("section", id=section_id)
     if not section:
         return []
-
     return [_parse_data_table(table) for table in section.find_all("table", class_="data-table")]
 
 
@@ -140,19 +152,13 @@ def _growth_tables(section_id: str, soup: BeautifulSoup) -> list[dict[str, Any]]
     for table in section.find_all("table"):
         if "data-table" in (table.get("class") or []):
             continue
-
         rows = table.find_all("tr")
         if not rows:
             continue
-
         title_cells = [cell.get_text(strip=True) for cell in rows[0].find_all(["td", "th"])]
         if len(title_cells) != 1:
             continue
-
-        growth_blocks.append(
-            {"metric": title_cells[0], "periods": _parse_key_value_table(table)}
-        )
-
+        growth_blocks.append({"metric": title_cells[0], "periods": _parse_key_value_table(table)})
     return growth_blocks
 
 
@@ -160,32 +166,22 @@ def _parse_documents(soup: BeautifulSoup) -> dict[str, list[dict[str, str]]]:
     section = soup.find("section", id="documents")
     if not section:
         return {}
-
     documents: dict[str, list[dict[str, str]]] = {}
     for heading in section.find_all("h3"):
         category = heading.get_text(strip=True)
         listing = heading.find_next("ul")
         if not listing:
             continue
-
         items: list[dict[str, str]] = []
         for item in listing.find_all("li"):
             link = item.find("a")
-            items.append(
-                {
-                    "title": item.get_text(strip=True),
-                    "url": link["href"] if link and link.has_attr("href") else "",
-                }
-            )
-
+            items.append({"title": item.get_text(strip=True), "url": link["href"] if link and link.has_attr("href") else ""})
         documents[category] = items
-
     return documents
 
 
 def parse_company_html(html: str, *, peers_html: str | None = None) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
-
     company_name = soup.find("h1")
     about_div = soup.select_one(".company-profile .about, .about")
     key_points_div = soup.select_one(".company-profile .sub:not(.about)")
@@ -237,14 +233,8 @@ def parse_company_html(html: str, *, peers_html: str | None = None) -> dict[str,
         "cash_flow": dict(zip(["headers", "rows"], _section_table("cash-flow", soup))),
         "ratios": dict(zip(["headers", "rows"], _section_table("ratios", soup))),
         "shareholding": {
-            "quarterly": {
-                "headers": shareholding_tables[0][0] if shareholding_tables else [],
-                "rows": shareholding_tables[0][1] if shareholding_tables else [],
-            },
-            "yearly": {
-                "headers": shareholding_tables[1][0] if len(shareholding_tables) > 1 else [],
-                "rows": shareholding_tables[1][1] if len(shareholding_tables) > 1 else [],
-            },
+            "quarterly": {"headers": shareholding_tables[0][0] if shareholding_tables else [], "rows": shareholding_tables[0][1] if shareholding_tables else []},
+            "yearly": {"headers": shareholding_tables[1][0] if len(shareholding_tables) > 1 else [], "rows": shareholding_tables[1][1] if len(shareholding_tables) > 1 else []},
         },
         "peers": {"headers": peers_headers, "rows": peers_rows},
         "documents": _parse_documents(soup),
@@ -254,28 +244,20 @@ def parse_company_html(html: str, *, peers_html: str | None = None) -> dict[str,
 def _table_to_dataframe(headers: list[str], rows: list[list[str]]) -> pd.DataFrame:
     if not headers and not rows:
         return pd.DataFrame()
-
     metric_header = headers[0] if headers else "Metric"
     period_headers = headers[1:] if len(headers) > 1 else []
-
-    if not period_headers and rows:
-        period_headers = [f"Col {index + 1}" for index in range(len(rows[0]) - 1)]
-
     data: dict[str, list[str]] = {metric_header: []}
     for header in period_headers:
         data[header] = []
-
     for row in rows:
         data[metric_header].append(row[0] if row else "")
         for index, header in enumerate(period_headers, start=1):
             data[header].append(row[index] if index < len(row) else "")
-
     return pd.DataFrame(data)
 
 
 def export_to_excel(data: dict[str, Any], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     overview_rows = [
         {"Field": "Company", "Value": data.get("company_name", "")},
         {"Field": "Company ID", "Value": data.get("company_id", "")},
@@ -283,10 +265,7 @@ def export_to_excel(data: dict[str, Any], output_path: Path) -> Path:
         {"Field": "Key Points", "Value": data.get("key_points", "")},
         {"Field": "Exported At (UTC)", "Value": datetime.now(timezone.utc).isoformat()},
     ]
-    overview_rows.extend(
-        {"Field": name, "Value": value}
-        for name, value in data.get("key_ratios", {}).items()
-    )
+    overview_rows.extend({"Field": name, "Value": value} for name, value in data.get("key_ratios", {}).items())
 
     pros_cons_rows: list[dict[str, str | int]] = []
     for index, item in enumerate(data.get("pros", []), start=1):
@@ -324,29 +303,14 @@ def export_to_excel(data: dict[str, Any], output_path: Path) -> Path:
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for sheet_name, frame in sheets:
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
-
     return output_path
 
 
 def export_company(symbol: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
-
-    try:
-        html = fetch_company_page(session, symbol)
-    except ValueError as ve:
-        # symbol not found
-        logging.error(str(ve))
-        raise
-    except Exception as exc:
-        logging.error("Failed to fetch company page for %s: %s", symbol, exc)
-        raise
-
-    try:
-        data = parse_company_html(html)
-    except Exception as exc:
-        logging.exception("Failed to parse HTML for %s", symbol)
-        raise RuntimeError(f"Parsing failed for {symbol}") from exc
+    html = fetch_company_page(session, symbol)
+    data = parse_company_html(html)
 
     company_id = data.get("company_id")
     if company_id:
@@ -360,16 +324,10 @@ def export_company(symbol: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_symbol = normalise_symbol(symbol)
     output_path = output_dir / f"{safe_symbol}.xlsx"
-
-    try:
-        return export_to_excel(data, output_path)
-    except Exception as exc:
-        logging.exception("Failed to write Excel for %s", symbol)
-        raise
+    return export_to_excel(data, output_path)
 
 
 def _parse_number_for_export(x: Any) -> float | None:
-    """Parse numeric-looking strings into floats (commas, parentheses, percent)."""
     if pd.isna(x):
         return None
     if isinstance(x, (int, float)):
@@ -377,19 +335,19 @@ def _parse_number_for_export(x: Any) -> float | None:
             return float(x)
         return None
     s = str(x).strip()
-    if s == '' or s in {'-', '—', 'NA', 'N/A'}:
+    if s == "" or s in {"-", "—", "NA", "N/A"}:
         return None
-    if s.endswith('%'):
+    if s.endswith("%"):
         try:
-            return float(s.strip('%').replace(',', ''))
+            return float(s.strip("%").replace(",", ""))
         except Exception:
             return None
     neg = False
-    if s.startswith('(') and s.endswith(')'):
+    if s.startswith("(") and s.endswith(")"):
         neg = True
         s = s[1:-1]
     s2 = re.sub(r"[^0-9.\-]", "", s)
-    if s2 in {'', '.', '-'}:
+    if s2 in {"", ".", "-"}:
         return None
     try:
         val = float(s2)
@@ -399,10 +357,6 @@ def _parse_number_for_export(x: Any) -> float | None:
 
 
 def write_jsonl_from_excel(excel_path: Path) -> Path:
-    """Read the created Excel and write a JSONL file (one entry per metric/period or row).
-
-    Each line is a JSON object: {id, text, metadata} suitable for embeddings.
-    """
     if not excel_path.exists():
         raise FileNotFoundError(excel_path)
 
@@ -410,72 +364,39 @@ def write_jsonl_from_excel(excel_path: Path) -> Path:
     out_dir = excel_path.parent
     symbol = excel_path.stem
     jsonl_path = out_dir / f"{symbol.lower()}.jsonl"
-
     entry_id = 0
-    with jsonl_path.open('w', encoding='utf8') as fh:
+
+    with jsonl_path.open("w", encoding="utf8") as fh:
         for sheet_name, df in wb.items():
             df = pd.DataFrame(df)
             df.columns = [str(c).strip() for c in df.columns]
-            # If table-like (first col metrics, others periods) -> melt
             cols = list(df.columns)
             if len(cols) >= 2:
                 metric_col = cols[0]
                 period_cols = cols[1:]
-                melt = df.melt(id_vars=[metric_col], value_vars=period_cols, var_name='period', value_name='value')
-                for _, row in melt.dropna(subset=['value']).iterrows():
-                    val = row['value']
+                melt = df.melt(id_vars=[metric_col], value_vars=period_cols, var_name="period", value_name="value")
+                for _, row in melt.dropna(subset=["value"]).iterrows():
+                    val = row["value"]
                     num = _parse_number_for_export(val)
                     text = f"{sheet_name} | {row[metric_col]} | {row['period']} = {num if num is not None else val}"
                     meta = {
-                        'sheet': sheet_name,
-                        'symbol': symbol,
-                        'period': str(row['period']),
-                        'metric': str(row[metric_col]),
+                        "sheet": sheet_name,
+                        "symbol": symbol,
+                        "period": str(row["period"]),
+                        "metric": str(row[metric_col]),
                     }
-                    obj = {'id': f"{symbol}_{entry_id}", 'text': text, 'metadata': meta}
-                    fh.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                    obj = {"id": f"{symbol}_{entry_id}", "text": text, "metadata": meta}
+                    fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
                     entry_id += 1
             else:
                 for _, row in df.iterrows():
-                    parts = [f"{k}: {v}" for k, v in row.items() if pd.notna(v) and v != '']
+                    parts = [f"{k}: {v}" for k, v in row.items() if pd.notna(v) and v != ""]
                     if not parts:
                         continue
                     text = f"{sheet_name} | " + "; ".join(parts)
-                    meta = {'sheet': sheet_name, 'symbol': symbol}
-                    obj = {'id': f"{symbol}_{entry_id}", 'text': text, 'metadata': meta}
-                    fh.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                    meta = {"sheet": sheet_name, "symbol": symbol}
+                    obj = {"id": f"{symbol}_{entry_id}", "text": text, "metadata": meta}
+                    fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
                     entry_id += 1
 
     return jsonl_path
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Export screener.in company data to Excel")
-    parser.add_argument("symbol", nargs="?", default="RELIANCE", help="Stock symbol")
-    parser.add_argument(
-        "--output-dir",
-        default=str(DEFAULT_OUTPUT_DIR),
-        help="Root directory to store company data (default: ./companies)",
-    )
-    args = parser.parse_args()
-
-    root = get_companies_root(Path(args.output_dir))
-    fundamental_dir, timestamp = ensure_category_directory(
-        args.symbol,
-        "fundamental",
-        root=root,
-    )
-
-    output_path = export_company(args.symbol, fundamental_dir)
-    print(f"Run folder: {fundamental_dir.parent}")
-    print(f"Run timestamp: {timestamp}")
-    print(f"Saved Excel file: {output_path.resolve()}")
-    try:
-        jsonl = write_jsonl_from_excel(output_path)
-        print(f"Saved JSONL file: {jsonl.resolve()}")
-    except Exception as exc:
-        print(f"Failed to write JSONL: {exc}")
-
-
-if __name__ == "__main__":
-    main()

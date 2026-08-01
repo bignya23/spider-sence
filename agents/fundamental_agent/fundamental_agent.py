@@ -18,13 +18,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from agents.fundamental_agent.screener_output import export_company, write_jsonl_from_excel
-from agents.fundamental_agent.screener_enricher import load_jsonl, build_lookup, compute_derivatives, save_result
+from mcp_servers.screener_mcp.screener_output import export_company, write_jsonl_from_excel
+from mcp_servers.screener_mcp.screener_enricher import load_jsonl, build_lookup, compute_derivatives, save_result
 from orchestrator.output_paths import (
     ensure_category_directory,
     get_category_directory,
@@ -69,6 +70,8 @@ def run_pipeline(
     generate_report: bool = False,
     config_path: Optional[Path] = None,
     run_timestamp: Optional[str] = None,
+    use_screener_mcp: bool = False,
+    screener_mcp_url: Optional[str] = None,
 ) -> Path:
     """Run the full fundamental agent pipeline.
 
@@ -135,8 +138,33 @@ def run_pipeline(
         logger.info("Stage 1: Fetching %s from screener.in ...", symbol)
         t0 = time.time()
         try:
-            excel_path = export_company(symbol, fundamental_dir)
-            logger.info("  Excel saved: %s", excel_path)
+            if use_screener_mcp:
+                from fastmcp import Client
+
+                url = screener_mcp_url or os.getenv(
+                    "SCREENER_MCP_URL", "http://127.0.0.1:8000/mcp/screener"
+                )
+                async def _call():
+                    async with Client(url) as client:
+                        res = await client.call_tool(
+                            "fetch_company_details",
+                            arguments={
+                                "symbol": symbol,
+                                "consolidated": consolidated,
+                                "exports_dir": str(exports_dir),
+                                "run_timestamp": resolved_timestamp,
+                            },
+                        )
+                        return res.data
+                import asyncio
+
+                payload = asyncio.run(_call())
+                excel_path = Path(payload["excel_path"])
+                jsonl_path = Path(payload["jsonl_path"])
+                logger.info("  Screener MCP Excel saved: %s", excel_path)
+            else:
+                excel_path = export_company(symbol, fundamental_dir)
+                logger.info("  Excel saved: %s", excel_path)
         except Exception as exc:
             logger.error("Failed to fetch company data for %s: %s", symbol, exc)
             raise

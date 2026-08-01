@@ -5,8 +5,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from agents.fundamental_agent import pipeline, report_generator, screener_enricher
-from orchestrator.output_paths import get_category_directory, get_companies_root, normalise_symbol
+from agents.fundamental_agent import fundamental_agent, report_generator
+from . import screener_enricher
+from .screener_output import export_company, write_jsonl_from_excel
+from orchestrator.output_paths import (
+    ensure_category_directory,
+    get_category_directory,
+    get_companies_root,
+    normalise_symbol,
+)
 
 COMPANIES_ROOT = Path(__file__).resolve().parents[2] / "companies"
 
@@ -19,6 +26,33 @@ except Exception as exc:  # pragma: no cover - hard import
 logger = logging.getLogger("screener_mcp")
 
 mcp = FastMCP("screener")
+
+
+@mcp.tool("fetch_company_details")
+def tool_fetch_company_details(
+    symbol: str,
+    consolidated: bool = False,
+    exports_dir: str | None = None,
+    run_timestamp: str | None = None,
+) -> Dict[str, Any]:
+    """Fetch company details from screener.in and export Excel + JSONL."""
+    root = get_companies_root(Path(exports_dir)) if exports_dir else get_companies_root(COMPANIES_ROOT)
+    fundamental_dir, resolved_timestamp = ensure_category_directory(
+        symbol,
+        "fundamental",
+        root=root,
+        run_timestamp=run_timestamp,
+    )
+    excel_path = export_company(symbol, fundamental_dir)
+    jsonl_path = write_jsonl_from_excel(excel_path)
+    return {
+        "symbol": symbol.strip().upper(),
+        "consolidated": consolidated,
+        "fundamental_dir": str(fundamental_dir),
+        "excel_path": str(excel_path),
+        "jsonl_path": str(jsonl_path),
+        "run_timestamp": resolved_timestamp,
+    }
 
 
 @mcp.tool("generate_report")
@@ -63,11 +97,12 @@ def tool_compute_derivatives(symbol: str, run_timestamp: str | None = None) -> D
 def tool_run_pipeline(symbol: str, generate_report: bool = False, run_timestamp: str | None = None) -> Dict[str, Any]:
     """Run the full pipeline (fetch + enrich) and optionally generate a report."""
     root = get_companies_root(COMPANIES_ROOT)
-    return pipeline.run_pipeline(
+    return fundamental_agent.run_pipeline(
         symbol,
         exports_dir=root,
         generate_report=generate_report,
         run_timestamp=run_timestamp,
+        use_screener_mcp=False,
     )
 
 

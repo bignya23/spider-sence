@@ -212,3 +212,25 @@ This means **no API key is needed** — Cline IS the LLM.
 - `lxml` — XML/HTML parser backend
 - `openai` — LLM API client (for report generation)
 - `mcp` — Model Context Protocol server (for Cline integration)
+- `numpy` — Numerical support for indicator calculations
+
+## Technical Agent Overview
+
+The technical agent implements a strict “data → indicators → patterns” flow, leaving all numeric work to Pandas/Numpy and reserving LLMs for commentary only:
+
+1. **Market MCP Fetch** – multi-timeframe OHLCV data (`daily`, `hourly`, `15m`) plus optional index/sector quotes via the FYERS-backed MCP tools.
+2. **Indicator Engine** (`agents/technical_agent/indicator_engine.py`) – computes EMA(20/50/200), MACD, RSI, ATR, Bollinger Bands, and relative volume snapshots for each timeframe.
+3. **Pattern Engine** (`agents/technical_agent/pattern_engine.py`) – detects breakouts, double bottoms, cup & handle, ascending triangles, and basic support/resistance using rule-based heuristics.
+
+`agents/technical_agent/technical_agent.py` orchestrates these steps asynchronously (`TechnicalAgent.analyse` / `run_basic_analysis`). Downstream LLM layers can then focus purely on interpreting the structured results.
+- `numpy` — Numerical support for indicator calculations
+
+## Technical Agent
+
+The technical agent orchestrates a three-stage workflow without offloading any calculations to the LLM:
+
+1. **Market MCP Fetch** – retrieves multi-timeframe OHLCV data (`daily`, `hourly`, `15m`) and optional index/sector context via the FYERS-backed MCP tools (`get_history`, `get_quote`).
+2. **Indicator Engine (Pandas)** – `agents/technical_agent/indicator_engine.py` derives EMA(20/50/200), MACD, RSI, ATR, Bollinger Bands, and relative volume snapshots per timeframe.
+3. **Pattern Engine** – `agents/technical_agent/pattern_engine.py` performs rule-based pattern scans (breakout, double bottom, cup & handle, ascending triangle, support/resistance) on the enriched data.
+
+`agents/technical_agent/technical_agent.py` ties these stages together, exposing `TechnicalAgent.analyse()` (async) and a `run_basic_analysis()` helper. Downstream LLMs can then focus purely on interpreting the structured output instead of crunching indicators.

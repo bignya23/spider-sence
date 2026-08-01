@@ -10,7 +10,7 @@ _TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_UTC"
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def get_companies_root(root: Path | str | None = None) -> Path:

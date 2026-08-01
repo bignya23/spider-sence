@@ -14,25 +14,51 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agents.fundamental_agent.prompt_template import build_prompts
 from orchestrator.llm_client import LLMClient
 from orchestrator.llm_config import LLMConfig, load_config
+from orchestrator.output_paths import get_category_directory, get_companies_root, normalise_symbol
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+DEFAULT_EXPORTS_DIR = Path(__file__).resolve().parents[2] / "companies"
 
 
-def load_derived_json(symbol: str, exports_dir: Path = DEFAULT_EXPORTS_DIR) -> Dict[str, Any]:
+def _resolve_fundamental_dir(
+    symbol: str,
+    exports_dir: Path = DEFAULT_EXPORTS_DIR,
+    run_timestamp: Optional[str] = None,
+) -> tuple[Path, str]:
+    root = get_companies_root(exports_dir)
+    return get_category_directory(symbol, "fundamental", root=root, run_timestamp=run_timestamp)
+
+
+def _load_derived_json_from_dir(symbol: str, fundamental_dir: Path) -> Dict[str, Any]:
+    safe_symbol = normalise_symbol(symbol)
+    derived_path = fundamental_dir / f"{safe_symbol}_derived.json"
+    if not derived_path.exists():
+        raise FileNotFoundError(
+            f"Derived JSON not found: {derived_path}\n"
+            f"Run the pipeline first: spider-fundamental {symbol} --skip-fetch"
+        )
+    with derived_path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def load_derived_json(
+    symbol: str,
+    exports_dir: Path = DEFAULT_EXPORTS_DIR,
+    run_timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
     """Load the derived JSON for a given symbol.
 
     Args:
         symbol: Stock symbol (e.g. RELIANCE).
         exports_dir: Directory containing the exports.
+        run_timestamp: Optional run timestamp folder to load; defaults to latest run.
 
     Returns:
         The derived JSON as a dict.
@@ -41,14 +67,8 @@ def load_derived_json(symbol: str, exports_dir: Path = DEFAULT_EXPORTS_DIR) -> D
         FileNotFoundError: If the derived JSON does not exist.
     """
     symbol = symbol.strip().upper()
-    derived_path = exports_dir / symbol / f"{symbol}_derived.json"
-    if not derived_path.exists():
-        raise FileNotFoundError(
-            f"Derived JSON not found: {derived_path}\n"
-            f"Run the pipeline first: spider-fundamental {symbol} --skip-fetch"
-        )
-    with derived_path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+    fundamental_dir, _ = _resolve_fundamental_dir(symbol, exports_dir, run_timestamp)
+    return _load_derived_json_from_dir(symbol, fundamental_dir)
 
 
 def generate_report(
@@ -76,10 +96,19 @@ def generate_report(
     return report_text
 
 
+def _save_report_to_dir(symbol: str, report_text: str, fundamental_dir: Path) -> Path:
+    fundamental_dir.mkdir(parents=True, exist_ok=True)
+    report_path = fundamental_dir / f"{normalise_symbol(symbol)}_fundamental_report.md"
+    with report_path.open("w", encoding="utf-8") as fh:
+        fh.write(report_text)
+    return report_path
+
+
 def save_report(
     symbol: str,
     report_text: str,
     exports_dir: Path = DEFAULT_EXPORTS_DIR,
+    run_timestamp: Optional[str] = None,
 ) -> Path:
     """Save the report as a Markdown file.
 
@@ -87,17 +116,14 @@ def save_report(
         symbol: Stock symbol.
         report_text: The report content.
         exports_dir: Directory containing the exports.
+        run_timestamp: Optional run timestamp folder; defaults to latest run.
 
     Returns:
         Path to the saved report file.
     """
     symbol = symbol.strip().upper()
-    folder = exports_dir / symbol
-    folder.mkdir(parents=True, exist_ok=True)
-    report_path = folder / f"{symbol}_fundamental_report.md"
-    with report_path.open("w", encoding="utf-8") as fh:
-        fh.write(report_text)
-    return report_path
+    fundamental_dir, _ = _resolve_fundamental_dir(symbol, exports_dir, run_timestamp)
+    return _save_report_to_dir(symbol, report_text, fundamental_dir)
 
 
 def run_report_generation(
@@ -105,6 +131,7 @@ def run_report_generation(
     *,
     exports_dir: Path = DEFAULT_EXPORTS_DIR,
     config_path: Optional[Path] = None,
+    run_timestamp: Optional[str] = None,
 ) -> Path:
     """Full report generation pipeline: load derived JSON → LLM → save report.
 
@@ -118,9 +145,12 @@ def run_report_generation(
     """
     symbol = symbol.strip().upper()
 
-    # Step 1: Load derived JSON
+    # Step 1: Resolve run folder & load derived JSON
+    logger.info("Resolving run folder for %s ...", symbol)
+    fundamental_dir, resolved_timestamp = _resolve_fundamental_dir(symbol, exports_dir, run_timestamp)
+
     logger.info("Loading derived JSON for %s ...", symbol)
-    derived_data = load_derived_json(symbol, exports_dir)
+    derived_data = _load_derived_json_from_dir(symbol, fundamental_dir)
 
     # Step 2: Load LLM config
     config = load_config(config_path) if config_path else load_config()
@@ -140,7 +170,7 @@ def run_report_generation(
     report_text = generate_report(derived_data, config=config)
 
     # Step 4: Save report
-    report_path = save_report(symbol, report_text, exports_dir)
+    report_path = _save_report_to_dir(symbol, report_text, fundamental_dir)
     logger.info("Report saved: %s", report_path)
 
     # Print summary
@@ -149,6 +179,8 @@ def run_report_generation(
     print("=" * 60)
     print(f"  Report file: {report_path}")
     print(f"  Report size: {len(report_text)} chars")
+    print(f"  Run folder: {fundamental_dir.parent}")
+    print(f"  Run timestamp: {resolved_timestamp}")
     print("=" * 60 + "\n")
 
     return report_path
@@ -162,13 +194,19 @@ def main() -> None:
     parser.add_argument(
         "--exports-dir",
         default=str(DEFAULT_EXPORTS_DIR),
-        help="Directory containing exports (default: agents/fundamental_agent/exports)",
+        help="Root directory containing company data (default: ./companies)",
     )
     parser.add_argument(
         "--config",
         type=str,
         default=None,
         help="Path to LLM config JSON file (overrides env vars)",
+    )
+    parser.add_argument(
+        "--run-timestamp",
+        type=str,
+        default=None,
+        help="Run timestamp folder to use (default: latest)",
     )
     args = parser.parse_args()
 
@@ -182,6 +220,7 @@ def main() -> None:
         args.symbol,
         exports_dir=Path(args.exports_dir),
         config_path=Path(args.config) if args.config else None,
+        run_timestamp=args.run_timestamp,
     )
 
 

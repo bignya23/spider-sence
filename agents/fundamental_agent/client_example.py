@@ -20,13 +20,17 @@ from fastmcp import Client
 
 
 # Default FastMCP HTTP endpoint (streamable-http path)
-DEFAULT_MCP_URL = os.getenv("FUNDAMENTAL_AGENT_URL", "http://localhost:8000/mcp")
+DEFAULT_MCP_URL = (
+    os.getenv("SCREENER_AGENT_URL")
+    or os.getenv("FUNDAMENTAL_AGENT_URL")
+    or "http://localhost:8000/mcp/screener"
+)
 
 
 async def invoke_tool_via_fastmcp(tool: str, args: Dict[str, Any], base_url: str = DEFAULT_MCP_URL) -> Any:
     """Invoke a tool using fastmcp.Client over HTTP transport.
 
-    Example transport URL: "http://localhost:8000/mcp"
+    Example transport URL: "http://localhost:8000/mcp/screener"
     """
     async with Client(base_url) as client:
         # call_tool returns a CallToolResult (or raises ToolError)

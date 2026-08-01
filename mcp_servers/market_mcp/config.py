@@ -1,3 +1,5 @@
+""" Configuration for Fyers API credentials. """
+
 from __future__ import annotations
 
 import os

@@ -17,6 +17,8 @@ import json
 import re
 import math
 
+from orchestrator.output_paths import ensure_category_directory, get_companies_root, normalise_symbol
+
 BASE_URL = "https://www.screener.in"
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -26,7 +28,7 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "exports"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "companies"
 
 
 def fetch_company_page(session: requests.Session, symbol: str, *, consolidated: bool = False) -> str:
@@ -354,10 +356,10 @@ def export_company(symbol: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         except Exception:
             logging.info("Continuing without peers for %s", symbol)
 
-    # create a per-company folder under the output directory
-    symbol_dir = Path(output_dir) / symbol.strip().upper()
-    symbol_dir.mkdir(parents=True, exist_ok=True)
-    output_path = symbol_dir / f"{symbol.strip().upper()}.xlsx"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_symbol = normalise_symbol(symbol)
+    output_path = output_dir / f"{safe_symbol}.xlsx"
 
     try:
         return export_to_excel(data, output_path)
@@ -453,11 +455,20 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory to store Excel files",
+        help="Root directory to store company data (default: ./companies)",
     )
     args = parser.parse_args()
 
-    output_path = export_company(args.symbol, Path(args.output_dir))
+    root = get_companies_root(Path(args.output_dir))
+    fundamental_dir, timestamp = ensure_category_directory(
+        args.symbol,
+        "fundamental",
+        root=root,
+    )
+
+    output_path = export_company(args.symbol, fundamental_dir)
+    print(f"Run folder: {fundamental_dir.parent}")
+    print(f"Run timestamp: {timestamp}")
     print(f"Saved Excel file: {output_path.resolve()}")
     try:
         jsonl = write_jsonl_from_excel(output_path)

@@ -1,3 +1,5 @@
+""" Only for generating access token for Fyers API. Needed for only one time. After that, the access token will be saved in .env file and can be used for further API calls. """
+
 from __future__ import annotations
 
 import os

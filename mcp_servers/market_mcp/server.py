@@ -1,3 +1,6 @@
+""" Market MCP server for FYERS API. Tools: get_quote, get_history, get_depth, get_profile, get_funds, get_positions. """
+
+
 from __future__ import annotations
 
 import logging

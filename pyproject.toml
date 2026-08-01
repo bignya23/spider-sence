@@ -18,10 +18,10 @@ spider-fundamental = "agents.fundamental_agent.pipeline:main"
 spider-fundamental-report = "agents.fundamental_agent.report_generator:main"
 spider-screener-fetch = "agents.fundamental_agent.screener_output:main"
 spider-screener-enrich = "agents.fundamental_agent.screener_enricher:main"
-spider-mcp = "orchestrator.mcp_server:main"
+spider-mcp = "mcp_servers.screener_mcp.server:main"
 
 [tool.setuptools.packages.find]
-include = ["agents*", "orchestrator*", "data*"]
+include = ["agents*", "orchestrator*", "mcp_servers*", "data*"]
 
 [tool.black]
 line-length = 88

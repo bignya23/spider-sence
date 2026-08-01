@@ -19,20 +19,37 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from agents.fundamental_agent.screener_output import export_company, write_jsonl_from_excel
 from agents.fundamental_agent.screener_enricher import load_jsonl, build_lookup, compute_derivatives, save_result
+from orchestrator.output_paths import (
+    ensure_category_directory,
+    get_category_directory,
+    get_companies_root,
+    normalise_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _try_generate_report(symbol: str, exports_dir: Path, config_path: Optional[Path]) -> Optional[Path]:
+def _try_generate_report(
+    symbol: str,
+    companies_root: Path,
+    config_path: Optional[Path],
+    run_timestamp: Optional[str],
+) -> Optional[Path]:
     """Attempt to generate an LLM report; return path or None on failure."""
     try:
         from agents.fundamental_agent.report_generator import run_report_generation
-        return run_report_generation(symbol, exports_dir=exports_dir, config_path=config_path)
+        return run_report_generation(
+            symbol,
+            exports_dir=companies_root,
+            config_path=config_path,
+            run_timestamp=run_timestamp,
+        )
     except SystemExit:
         # Config validation failed — skip gracefully
         return None
@@ -40,7 +57,7 @@ def _try_generate_report(symbol: str, exports_dir: Path, config_path: Optional[P
         logger.warning("Report generation skipped: %s", exc)
         return None
 
-DEFAULT_EXPORTS_DIR = Path(__file__).resolve().parent / "exports"
+DEFAULT_EXPORTS_DIR = Path(__file__).resolve().parents[2] / "companies"
 
 
 def run_pipeline(
@@ -51,6 +68,7 @@ def run_pipeline(
     consolidated: bool = False,
     generate_report: bool = False,
     config_path: Optional[Path] = None,
+    run_timestamp: Optional[str] = None,
 ) -> Path:
     """Run the full fundamental agent pipeline.
 
@@ -69,21 +87,47 @@ def run_pipeline(
         Path to the saved derived JSON file.
     """
     symbol = symbol.strip().upper()
-    exports = Path(exports_dir)
-    exports.mkdir(parents=True, exist_ok=True)
+    normalised_symbol = normalise_symbol(symbol)
+    companies_root = get_companies_root(exports_dir)
+
+    run_time = datetime.now(timezone.utc)
+
+    if skip_fetch:
+        try:
+            fundamental_dir, resolved_timestamp = get_category_directory(
+                symbol,
+                "fundamental",
+                root=companies_root,
+                run_timestamp=run_timestamp,
+            )
+        except FileNotFoundError:
+            logger.error(
+                "Skipping fetch but no existing data found for %s in %s",
+                symbol,
+                companies_root / normalised_symbol,
+            )
+            raise SystemExit(2)
+    else:
+        fundamental_dir, resolved_timestamp = ensure_category_directory(
+            symbol,
+            "fundamental",
+            root=companies_root,
+            run_datetime=run_time,
+            run_timestamp=run_timestamp,
+        )
 
     # ------------------------------------------------------------------
     # Stage 1: Fetch from screener.in -> Excel + JSONL
     # ------------------------------------------------------------------
-    excel_path = exports / symbol / f"{symbol}.xlsx"
-    jsonl_path = exports / symbol / f"{symbol.lower()}.jsonl"
+    excel_path = fundamental_dir / f"{normalised_symbol}.xlsx"
+    jsonl_path = fundamental_dir / f"{normalised_symbol.lower()}.jsonl"
 
     if skip_fetch:
         if not jsonl_path.exists() and not excel_path.exists():
             logger.error(
                 "Skipping fetch but no existing data found for %s in %s",
                 symbol,
-                exports / symbol,
+                fundamental_dir,
             )
             raise SystemExit(2)
         logger.info("Skipping fetch step; using existing data for %s", symbol)
@@ -91,7 +135,7 @@ def run_pipeline(
         logger.info("Stage 1: Fetching %s from screener.in ...", symbol)
         t0 = time.time()
         try:
-            excel_path = export_company(symbol, exports)
+            excel_path = export_company(symbol, fundamental_dir)
             logger.info("  Excel saved: %s", excel_path)
         except Exception as exc:
             logger.error("Failed to fetch company data for %s: %s", symbol, exc)
@@ -115,14 +159,14 @@ def run_pipeline(
     logger.info("Stage 2: Computing derived fundamentals for %s ...", symbol)
 
     # locate JSONL
-    jsonl1 = exports / symbol / f"{symbol.lower()}.jsonl"
-    jsonl2 = exports / symbol / f"{symbol}.jsonl"
+    jsonl1 = fundamental_dir / f"{normalised_symbol.lower()}.jsonl"
+    jsonl2 = fundamental_dir / f"{normalised_symbol}.jsonl"
     if jsonl1.exists():
         jpath = jsonl1
     elif jsonl2.exists():
         jpath = jsonl2
     else:
-        logger.error("JSONL file not found for %s in %s", symbol, exports / symbol)
+        logger.error("JSONL file not found for %s in %s", symbol, fundamental_dir)
         raise SystemExit(2)
 
     items = load_jsonl(jpath)
@@ -130,7 +174,7 @@ def run_pipeline(
 
     lookup = build_lookup(items)
     result = compute_derivatives(lookup, symbol)
-    outp = save_result(symbol, result, exports)
+    outp = save_result(symbol, result, fundamental_dir)
     logger.info("  Derived JSON saved: %s", outp)
     logger.info("Stage 2 complete.")
 
@@ -145,6 +189,7 @@ def run_pipeline(
     print(f"  FUNDAMENTAL AGENT PIPELINE — {symbol}")
     print("=" * 60)
     print(f"  Data as of: {result.get('data_as_of')}")
+    print(f"  Run timestamp: {resolved_timestamp}")
     print("-" * 60)
     print("  Raw Baseline Inputs:")
     for k, v in raw.items():
@@ -161,6 +206,7 @@ def run_pipeline(
     print(f"    Cons: {qual.get('verified_cons', [])}")
     print("=" * 60)
     print(f"  Output: {outp}")
+    print(f"  Run folder: {fundamental_dir.parent}")
     print("=" * 60 + "\n")
 
     # ------------------------------------------------------------------
@@ -169,17 +215,20 @@ def run_pipeline(
     report_path = None
     if generate_report:
         logger.info("Stage 3: Generating LLM fundamental report for %s ...", symbol)
-        report_path = _try_generate_report(symbol, exports, config_path)
+        report_path = _try_generate_report(symbol, companies_root, config_path, resolved_timestamp)
         if report_path:
             logger.info("Stage 3 complete.")
         else:
             logger.info("Stage 3 skipped (no LLM config or error).")
 
-    # Return a structured result so callers (clients/HTTP) can see both
-    # the derived JSON and the optional report path.
+    payload = {
+        "derived_json": str(outp),
+        "run_folder": str(fundamental_dir.parent),
+        "run_timestamp": resolved_timestamp,
+    }
     if report_path:
-        return {"derived_json": str(outp), "report_path": str(report_path)}
-    return {"derived_json": str(outp)}
+        payload["report_path"] = str(report_path)
+    return payload
 
 
 def main() -> None:
@@ -190,7 +239,7 @@ def main() -> None:
     parser.add_argument(
         "--exports-dir",
         default=str(DEFAULT_EXPORTS_DIR),
-        help="Directory to store exports (default: agents/fundamental_agent/exports)",
+        help="Root directory to store company data (default: ./companies)",
     )
     parser.add_argument(
         "--skip-fetch",
@@ -208,6 +257,11 @@ def main() -> None:
         help="Generate an LLM fundamental analysis report after enrichment",
     )
     parser.add_argument(
+        "--run-timestamp",
+        default=None,
+        help="Use an existing run timestamp (default: create new run)",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=None,
@@ -222,13 +276,14 @@ def main() -> None:
     )
 
     run_pipeline(
-        args.symbol,
-        exports_dir=Path(args.exports_dir),
-        skip_fetch=args.skip_fetch,
-        consolidated=args.consolidated,
-        generate_report=args.report,
-        config_path=Path(args.config) if args.config else None,
-    )
+            args.symbol,
+            exports_dir=Path(args.exports_dir),
+            skip_fetch=args.skip_fetch,
+            consolidated=args.consolidated,
+            generate_report=args.report,
+            config_path=Path(args.config) if args.config else None,
+            run_timestamp=args.run_timestamp,
+        )
 
 
 if __name__ == "__main__":

@@ -102,14 +102,17 @@ python3 -m agents.fundamental_agent.screener_enricher RELIANCE
 
 ### Output
 
-All exports are saved under `agents/fundamental_agent/exports/<SYMBOL>/`:
+Each run writes to `companies/<SYMBOL>/<RUN_TIMESTAMP>/`, where the timestamp is
+formatted as `YYYYMMDD_HHMMSS_UTC`.
 
-| File | Description |
-|---|---|
-| `<SYMBOL>.xlsx` | Raw screener.in data in Excel format |
-| `<symbol>.jsonl` | One JSON object per metric/period (for embeddings) |
-| `<SYMBOL>_derived.json` | Computed derivatives + raw baseline inputs + field definitions |
-| `<SYMBOL>_fundamental_report.md` | LLM-generated fundamental analysis report (Markdown) |
+- `fundamental/`
+  - `<SYMBOL>.xlsx` — Raw screener.in export in Excel format.
+  - `<symbol>.jsonl` — One JSON object per metric/period (for embeddings or search).
+  - `<SYMBOL>_derived.json` — Computed fundamentals plus raw baseline inputs.
+  - `<SYMBOL>_fundamental_report.md` — LLM-generated Markdown report (when enabled).
+- `technical/`
+  - `<SYMBOL>_candles.png` — Candlestick chart rendered via Matplotlib.
+  - `<SYMBOL>_interactive.html` — Plotly-based interactive chart (when generated).
 
 The derived JSON contains:
 
@@ -140,7 +143,8 @@ spider-sence/
 │       ├── prompt_template.py     # LLM prompt templates for report generation
 │       ├── report_generator.py    # Stage 3: LLM report generation
 │       ├── pipeline.py            # Orchestrates all stages
-│       └── exports/               # Generated output files
+│       └── exports/               # (legacy) retained for compatibility
+├── companies/                     # Runtime outputs grouped by symbol/run
 ├── orchestrator/
 │   ├── __init__.py
 │   ├── llm_config.py              # LLM configuration (env vars / JSON file)
@@ -167,7 +171,7 @@ client) can call directly — no need to run CLI commands manually.
   "mcpServers": {
     "spider-sence": {
       "command": "python3",
-      "args": ["-m", "orchestrator.mcp_server"],
+      "args": ["-m", "mcp_servers.screener_mcp.server"],
       "cwd": "/Users/bignyagogoi/Desktop/spider-sence"
     }
   }
@@ -183,13 +187,9 @@ client) can call directly — no need to run CLI commands manually.
 
 | Tool | Description |
 |---|---|
-| `fetch_company` | Fetch company data from screener.in |
-| `enrich_fundamentals` | Compute derived fundamentals from JSONL |
-| `generate_report` | Generate report via external LLM API (requires API key) |
-| `run_full_pipeline` | Run all three stages (fetch + enrich + report) |
-| `get_derived_data` | Read existing derived JSON for a symbol |
-| `get_analysis_prompt` | Get system prompt + derived data for Cline to generate a report |
-| `save_report` | Save a generated report as Markdown |
+| `run_pipeline` | Fetch & enrich Screener data, optionally generate report |
+| `compute_derivatives` | Compute derived fundamentals from existing JSONL |
+| `generate_report` | Generate an LLM fundamental analysis report |
 
 ### Cline-Based Report Generation (No API Key Needed)
 

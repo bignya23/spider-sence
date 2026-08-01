@@ -15,6 +15,8 @@ import math
 from typing import Any, Dict, Optional
 import difflib
 
+from orchestrator.output_paths import get_category_directory, get_companies_root, normalise_symbol
+
 
 def parse_number(s: Any) -> Optional[float]:
     if s is None:
@@ -542,11 +544,11 @@ def compute_derivatives(lookup: Dict[str, Any], symbol: str) -> Dict[str, Any]:
 
     return result
 
-
 def save_result(symbol: str, result: Dict[str, Any], base: Path) -> Path:
-    folder = Path(base) / symbol.strip().upper()
+    folder = Path(base)
     folder.mkdir(parents=True, exist_ok=True)
-    outp = folder / f"{symbol.strip().upper()}_derived.json"
+    safe_symbol = normalise_symbol(symbol)
+    outp = folder / f"{safe_symbol}_derived.json"
     with outp.open('w', encoding='utf8') as fh:
         json.dump(result, fh, ensure_ascii=False, indent=2)
     return outp
@@ -555,27 +557,43 @@ def save_result(symbol: str, result: Dict[str, Any], base: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('symbol')
-    parser.add_argument('--exports-dir', default=str(Path(__file__).resolve().parent / 'exports'))
+    parser.add_argument('--exports-dir', default=str(Path(__file__).resolve().parents[2] / 'companies'))
+    parser.add_argument('--run-timestamp', default=None, help='Specific run timestamp folder to use; defaults to latest run')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     symbol = args.symbol.strip().upper()
-    exports = Path(args.exports_dir) / symbol
+    normalised_symbol = normalise_symbol(symbol)
+
+    root = get_companies_root(Path(args.exports_dir))
+    try:
+        fundamental_dir, timestamp = get_category_directory(
+            normalised_symbol,
+            'fundamental',
+            root=root,
+            run_timestamp=args.run_timestamp,
+        )
+    except FileNotFoundError as exc:
+        logging.error('%s', exc)
+        raise SystemExit(2) from exc
+
     # JSONL file may be lowercase name
-    jsonl1 = exports / f"{symbol.lower()}.jsonl"
-    jsonl2 = exports / f"{symbol}.jsonl"
+    jsonl1 = fundamental_dir / f"{normalised_symbol.lower()}.jsonl"
+    jsonl2 = fundamental_dir / f"{normalised_symbol}.jsonl"
     if jsonl1.exists():
         jpath = jsonl1
     elif jsonl2.exists():
         jpath = jsonl2
     else:
-        logging.error('JSONL file not found for %s in %s', symbol, exports)
+        logging.error('JSONL file not found for %s in %s', symbol, fundamental_dir)
         raise SystemExit(2)
 
     items = load_jsonl(jpath)
     lookup = build_lookup(items)
     result = compute_derivatives(lookup, symbol)
-    outp = save_result(symbol, result, Path(args.exports_dir))
+    outp = save_result(symbol, result, fundamental_dir)
+    print('Run folder:', fundamental_dir.parent)
+    print('Run timestamp:', timestamp)
     print('Saved derived JSON:', outp)
 
 

@@ -4,3 +4,5 @@
 agents/fundamental_agent/exports
 __pycache__
 .DS_Store
+fyersApi.log
+fyersRequests.log

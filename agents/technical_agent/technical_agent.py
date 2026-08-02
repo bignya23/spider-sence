@@ -89,9 +89,10 @@ class TimeframeSpec:
 
 
 DEFAULT_TIMEFRAMES: Dict[str, TimeframeSpec] = {
-    "daily": TimeframeSpec("D", (365, 180, 90, 45)),
+    "daily":  TimeframeSpec("D",  (365, 180, 90, 45)),
     "hourly": TimeframeSpec("60", (90, 60, 30, 15)),
-    "m15": TimeframeSpec("15", (30, 15, 7)),
+    "m15":    TimeframeSpec("15", (30, 15, 7)),
+    "m5":     TimeframeSpec("5",  (15, 7, 3)),
 }
 
 
@@ -184,6 +185,7 @@ class TechnicalAgent:
             graph_paths = await self._generate_graphs(
                 symbol,
                 history_payloads=history_payloads,
+                signals=result.get("signals", {}),
                 run_ts=run_ts,
             )
             result["graphs"] = [str(p) for p in graph_paths]
@@ -217,6 +219,7 @@ class TechnicalAgent:
         symbol: str,
         *,
         history_payloads: Dict[str, Dict[str, Any]],
+        signals: Dict[str, Any],
         run_ts: str,
     ) -> list[Path]:
         """Generate per-indicator charts using the already-fetched daily history.
@@ -247,6 +250,7 @@ class TechnicalAgent:
                 run_timestamp=run_ts,
                 root=self.graphs_root,
                 config=self.indicator_config,
+                setups=signals.get("style_setups", {}),
             )
         except Exception:
             return []
@@ -417,17 +421,29 @@ if __name__ == "__main__":
         signals = result.get("signals", {})
         if signals:
             conf = signals.get("confluence", {})
-            trade = signals.get("trade", {})
-            print("\n" + "═" * 60)
-            print(f"  📈 SIGNAL SUMMARY  ({args.symbol})")
-            print("═" * 60)
+            style_setups = signals.get("style_setups", {})
+            print("\n" + "═" * 68)
+            print(f"  📈 TECHNICAL ANALYSIS  ({args.symbol})")
+            print("═" * 68)
             print(f"  {signals.get('summary', '')}")
-            print(f"\n  Confluence: {conf.get('score')}/10  │  Bias: {conf.get('dominant_bias', '').upper()}")
-            if trade.get("entry"):
-                print(f"  Entry: {trade['entry']}  │  SL: {trade['stop_loss']}  │  TP: {trade['take_profit']}  │  RR: {trade['risk_reward']}×")
-                if trade.get("position_size_shares"):
-                    print(f"  Size: {trade['position_size_shares']} shares  │  Risk: ₹{trade['risk_amount']:.0f}")
-            print("═" * 60)
+            print(f"\n  Confluence: {conf.get('score')}/10  │  Dominant Bias: {conf.get('dominant_bias', '').upper()}  │  {conf.get('interpretation', '')}")
+
+            if style_setups:
+                print("\n  ── TRADING STYLE SETUPS ──")
+                for style_name, style_data in style_setups.items():
+                    setup = style_data.get("setup")
+                    bias = style_data.get("bias", "N/A").upper()
+                    if setup:
+                        direction = "LONG ▲" if style_data["bias"] == "bullish" else "SHORT ▼"
+                        print(f"\n  ✅ [{style_name.upper()}]  Bias: {bias}  |  {direction}")
+                        print(f"     Entry: {setup['entry']}  ({setup['entry_level']})")
+                        print(f"     Stop:  {setup['stop_loss']}  ({setup['stop_level']})")
+                        print(f"     Target:{setup['take_profit']}  ({setup['target_level']})")
+                        print(f"     RR: {setup['risk_reward']}×  │  Risk/share: ₹{setup['per_share_risk']}  │  Reward/share: ₹{setup['per_share_reward']}")
+                    else:
+                        reason = style_data.get("rejection_reason", "Filtered")
+                        print(f"  ✗  [{style_name.upper()}]  Bias: {bias}  → {reason}")
+            print("\n" + "═" * 68)
 
         # ── saved file locations ──────────────────────────────────────────────
         from pathlib import Path as _Path

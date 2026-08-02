@@ -36,26 +36,26 @@ from .indicator_engine import IndicatorConfig, calculate_indicator_series
 from .chart_generator import extract_candles
 
 # ── palette ──────────────────────────────────────────────────────────────────
-_BG        = "#0f1117"
-_GRID      = "#1e2130"
-_TEXT      = "#e2e8f0"
-_UP        = "#22c55e"
-_DOWN      = "#ef4444"
-_EMA20     = "#facc15"
-_EMA50     = "#38bdf8"
-_EMA200    = "#f472b6"
-_RSI_LINE  = "#a78bfa"
-_RSI_OB    = "#ef444466"
-_RSI_OS    = "#22c55e66"
-_MACD_LINE = "#38bdf8"
-_SIG_LINE  = "#f97316"
-_HIST_POS  = "#22c55e99"
-_HIST_NEG  = "#ef444499"
-_BOLL_MID  = "#94a3b8"
-_BOLL_FILL = "#38bdf822"
-_ATR_LINE  = "#fb923c"
-_RVOL_MED  = "#38bdf8"
-_RVOL_HIGH = "#f97316"
+_BG        = "#ffffff"
+_GRID      = "#e2e8f0"
+_TEXT      = "#0f1117"
+_UP        = "#16a34a"
+_DOWN      = "#dc2626"
+_EMA20     = "#d97706"
+_EMA50     = "#0284c7"
+_EMA200    = "#db2777"
+_RSI_LINE  = "#7c3aed"
+_RSI_OB    = "#dc262644"
+_RSI_OS    = "#16a34a44"
+_MACD_LINE = "#0284c7"
+_SIG_LINE  = "#ea580c"
+_HIST_POS  = "#16a34a66"
+_HIST_NEG  = "#dc262666"
+_BOLL_MID  = "#64748b"
+_BOLL_FILL = "#0284c722"
+_ATR_LINE  = "#ea580c"
+_RVOL_MED  = "#0284c7"
+_RVOL_HIGH = "#ea580c"
 
 _DPI = 160
 _W   = 16
@@ -88,8 +88,8 @@ def _to_dataframe(candles: list[Any]) -> pd.DataFrame:
     return df.sort_values("time").reset_index(drop=True)
 
 
-def _apply_dark_style(ax: plt.Axes, fig: plt.Figure) -> None:
-    """Apply consistent dark-theme styling to an axes."""
+def _apply_style(ax: plt.Axes, fig: plt.Figure) -> None:
+    """Apply consistent styling to an axes."""
     fig.patch.set_facecolor(_BG)
     ax.set_facecolor(_BG)
     ax.grid(True, color=_GRID, linestyle="--", linewidth=0.6, alpha=0.9)
@@ -142,7 +142,7 @@ def _save(fig: plt.Figure, output_path: Path) -> Path:
 def _chart_ema(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
     """Candlestick chart with EMA 20 / 50 / 200 overlaid."""
     fig, ax = plt.subplots(figsize=(_W, _H))
-    _apply_dark_style(ax, fig)
+    _apply_style(ax, fig)
 
     _draw_candlesticks(ax, df)
 
@@ -167,7 +167,7 @@ def _chart_ema(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -
 def _chart_rsi(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
     """RSI line chart with overbought / oversold horizontal bands."""
     fig, ax = plt.subplots(figsize=(_W, _H * 0.65))
-    _apply_dark_style(ax, fig)
+    _apply_style(ax, fig)
 
     x = np.arange(len(df))
     rsi_vals = series["rsi"].values
@@ -205,7 +205,7 @@ def _chart_macd(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) 
 
     # --- panel 0: MACD line + signal ---
     ax0 = fig.add_subplot(gs[0])
-    _apply_dark_style(ax0, fig)
+    _apply_style(ax0, fig)
     ax0.plot(x, macd_vals, color=_MACD_LINE, linewidth=1.4, label="MACD")
     ax0.plot(x, sig_vals,  color=_SIG_LINE,  linewidth=1.2, label="Signal", linestyle="--")
     ax0.axhline(0, color=_GRID, linewidth=0.6)
@@ -216,7 +216,7 @@ def _chart_macd(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) 
 
     # --- panel 1: histogram ---
     ax1 = fig.add_subplot(gs[1], sharex=ax0)
-    _apply_dark_style(ax1, fig)
+    _apply_style(ax1, fig)
     colors = [_HIST_POS if v >= 0 else _HIST_NEG for v in hist_vals]
     ax1.bar(x, hist_vals, color=colors, width=0.7)
     ax1.axhline(0, color=_GRID, linewidth=0.6)
@@ -225,7 +225,7 @@ def _chart_macd(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) 
 
     # --- panel 2: price (sparkline) ---
     ax2 = fig.add_subplot(gs[2], sharex=ax0)
-    _apply_dark_style(ax2, fig)
+    _apply_style(ax2, fig)
     ax2.plot(x, df["close"].values, color=_TEXT, linewidth=0.8, alpha=0.7)
     ax2.set_ylabel("Close", color=_TEXT, fontsize=8)
     _x_date_ticks(ax2, df)
@@ -243,7 +243,7 @@ def _chart_bollinger(df: pd.DataFrame, series: dict, symbol: str, output_path: P
     x = np.arange(len(df))
 
     fig, ax = plt.subplots(figsize=(_W, _H))
-    _apply_dark_style(ax, fig)
+    _apply_style(ax, fig)
 
     _draw_candlesticks(ax, df)
 
@@ -264,7 +264,7 @@ def _chart_bollinger(df: pd.DataFrame, series: dict, symbol: str, output_path: P
 def _chart_atr(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
     """ATR line chart."""
     fig, ax = plt.subplots(figsize=(_W, _H * 0.65))
-    _apply_dark_style(ax, fig)
+    _apply_style(ax, fig)
 
     x = np.arange(len(df))
     ax.plot(x, series["atr"].values, color=_ATR_LINE, linewidth=1.5, label="ATR (14)")
@@ -285,7 +285,7 @@ def _chart_rvol(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) 
     x = np.arange(len(df))
 
     fig, ax = plt.subplots(figsize=(_W, _H * 0.65))
-    _apply_dark_style(ax, fig)
+    _apply_style(ax, fig)
 
     colors = [_RVOL_HIGH if v >= 2.0 else _RVOL_MED for v in rvol_vals]
     ax.bar(x, rvol_vals, color=colors, width=0.7, alpha=0.85)
@@ -337,18 +337,142 @@ def output_indicator_graph_path(
 ) -> Path:
     """Return the full path for a single indicator PNG file."""
     safe_symbol = normalise_symbol(symbol)
-    return output_indicator_graph_dir(symbol, run_timestamp, root=root) / f"{safe_symbol}_{indicator_name}.png"
+    base_dir = output_indicator_graph_dir(symbol, run_timestamp, root=root)
+    return base_dir / f"{safe_symbol}_{indicator_name}.png"
 
+
+def _chart_trade_setup_for_style(
+    df: pd.DataFrame,
+    series: dict,
+    symbol: str,
+    output_path: Path,
+    style_name: str,
+    setup: dict,
+) -> Path:
+    """Candlestick chart with entry/stop/target zones for a specific trading style."""
+    fig, ax = plt.subplots(figsize=(_W, _H))
+    _apply_style(ax, fig)
+    _draw_candlesticks(ax, df)
+
+    entry = setup["entry"]
+    sl = setup["stop_loss"]
+    tp = setup["take_profit"]
+    bias = setup.get("bias", "bullish")
+    rr = setup["risk_reward"]
+    per_share_risk = setup["per_share_risk"]
+    per_share_reward = setup["per_share_reward"]
+
+    x = np.arange(len(df))
+
+    # Shaded zones (green = reward, red = risk)
+    if bias == "bullish":
+        ax.fill_between(x, entry, tp, color=_UP, alpha=0.12)
+        ax.fill_between(x, entry, sl, color=_DOWN, alpha=0.12)
+    else:
+        ax.fill_between(x, entry, sl, color=_DOWN, alpha=0.12)
+        ax.fill_between(x, entry, tp, color=_UP, alpha=0.12)
+
+    # Horizontal level lines
+    ax.axhline(tp, color=_UP,   linestyle="--", linewidth=1.3, alpha=0.9, label=f"Target  {tp}  ({setup.get('target_level', '')}")
+    ax.axhline(entry, color="#334155", linestyle="-",  linewidth=1.6, alpha=0.9, label=f"Entry   {entry}  ({setup.get('entry_level', '')}")
+    ax.axhline(sl, color=_DOWN, linestyle="--", linewidth=1.3, alpha=0.9, label=f"Stop    {sl}  ({setup.get('stop_level', '')}")
+
+    # Right-side text annotations
+    bbox = dict(boxstyle="round,pad=0.3", fc=_BG, ec=_GRID, alpha=0.92)
+    xlast = len(df) + 0.5
+    ax.text(xlast, tp,    f" TP  {tp}\n+₹{per_share_reward:.2f}/share",  color=_UP,     va="center", fontsize=8.5, bbox=bbox)
+    ax.text(xlast, entry, f" ENTRY  {entry}",                              color="#334155",va="center", fontsize=8.5, bbox=bbox)
+    ax.text(xlast, sl,    f" SL  {sl}\n-₹{per_share_risk:.2f}/share",    color=_DOWN,   va="center", fontsize=8.5, bbox=bbox)
+
+    direction = "LONG ▲" if bias == "bullish" else "SHORT ▼"
+    ax.set_xlim(-1, len(df) + 12)
+    ax.set_title(
+        f"{symbol}  —  {style_name.upper()} Setup  |  {direction}  |  RR: {rr}×",
+        color=_TEXT, fontsize=13, fontweight="bold",
+    )
+    ax.set_ylabel("Price", color=_TEXT)
+    ax.legend(facecolor=_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=7.5, loc="upper left")
+    _x_date_ticks(ax, df)
+    fig.tight_layout()
+    return _save(fig, output_path)
+
+def _chart_supertrend(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
+    fig, ax = plt.subplots(figsize=(_W, _H))
+    _apply_style(ax, fig)
+    _draw_candlesticks(ax, df)
+    x = np.arange(len(df))
+    st_dict = series.get("supertrend", {})
+    st = st_dict.get("supertrend")
+    if st is not None:
+        ax.plot(x, st, color=_TEXT, linewidth=2, label="Supertrend", alpha=0.7)
+    ax.set_xlim(-1, len(df) + 2)
+    ax.set_title(f"{symbol}  —  Supertrend", color=_TEXT, fontsize=13, fontweight="bold")
+    ax.set_ylabel("Price", color=_TEXT)
+    ax.legend(facecolor=_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=8)
+    _x_date_ticks(ax, df)
+    fig.tight_layout()
+    return _save(fig, output_path)
+
+def _chart_ichimoku(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
+    fig, ax = plt.subplots(figsize=(_W, _H))
+    _apply_style(ax, fig)
+    _draw_candlesticks(ax, df)
+    x = np.arange(len(df))
+    
+    ichi = series.get("ichimoku", {})
+    tenkan = ichi.get("tenkan_sen")
+    kijun = ichi.get("kijun_sen")
+    senkou_a = ichi.get("senkou_a")
+    senkou_b = ichi.get("senkou_b")
+    
+    if tenkan is not None: ax.plot(x, tenkan, color=_EMA20, linewidth=1, label="Tenkan")
+    if kijun is not None: ax.plot(x, kijun, color=_EMA50, linewidth=1, label="Kijun")
+    if senkou_a is not None and senkou_b is not None:
+        ax.plot(x, senkou_a, color=_UP, linewidth=0.5, alpha=0.5)
+        ax.plot(x, senkou_b, color=_DOWN, linewidth=0.5, alpha=0.5)
+        ax.fill_between(x, senkou_a, senkou_b, where=(senkou_a >= senkou_b), color=_UP, alpha=0.15, interpolate=True)
+        ax.fill_between(x, senkou_a, senkou_b, where=(senkou_a < senkou_b), color=_DOWN, alpha=0.15, interpolate=True)
+
+    ax.set_xlim(-1, len(df) + 2)
+    ax.set_title(f"{symbol}  —  Ichimoku Cloud", color=_TEXT, fontsize=13, fontweight="bold")
+    ax.set_ylabel("Price", color=_TEXT)
+    ax.legend(facecolor=_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=8)
+    _x_date_ticks(ax, df)
+    fig.tight_layout()
+    return _save(fig, output_path)
+
+def _chart_donchian(df: pd.DataFrame, series: dict, symbol: str, output_path: Path) -> Path:
+    fig, ax = plt.subplots(figsize=(_W, _H))
+    _apply_style(ax, fig)
+    _draw_candlesticks(ax, df)
+    x = np.arange(len(df))
+    don20 = series.get("donchian_20", {})
+    up = don20.get("upper")
+    low = don20.get("lower")
+    if up is not None and low is not None:
+        ax.plot(x, up, color=_BOLL_MID, linestyle="--", linewidth=1.2, label="DC Upper (20)")
+        ax.plot(x, low, color=_BOLL_MID, linestyle="--", linewidth=1.2, label="DC Lower (20)")
+        ax.fill_between(x, low, up, color=_BOLL_FILL)
+    ax.set_xlim(-1, len(df) + 2)
+    ax.set_title(f"{symbol}  —  Donchian Channels (20)", color=_TEXT, fontsize=13, fontweight="bold")
+    ax.set_ylabel("Price", color=_TEXT)
+    ax.legend(facecolor=_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=8)
+    _x_date_ticks(ax, df)
+    fig.tight_layout()
+    return _save(fig, output_path)
 
 # ── main entry-point ──────────────────────────────────────────────────────────
 
 _CHART_FNS = {
-    "ema":      _chart_ema,
-    "rsi":      _chart_rsi,
-    "macd":     _chart_macd,
-    "bollinger": _chart_bollinger,
-    "atr":      _chart_atr,
-    "rvol":     _chart_rvol,
+    "ema":        _chart_ema,
+    "supertrend": _chart_supertrend,
+    "ichimoku":   _chart_ichimoku,
+    "donchian":   _chart_donchian,
+    "rsi":        _chart_rsi,
+    "macd":       _chart_macd,
+    "bollinger":  _chart_bollinger,
+    "atr":        _chart_atr,
+    "rvol":       _chart_rvol,
 }
 
 
@@ -360,29 +484,17 @@ def generate_indicator_graphs(
     root: Path | None = None,
     config: IndicatorConfig | None = None,
     indicator_names: Iterable[str] | None = None,
+    setups: dict[str, Any] | None = None,
 ) -> list[Path]:
-    """Generate per-indicator PNG charts and return a list of written paths.
+    """Generate per-indicator PNG charts and a separate chart per valid trading style.
 
-    Charts are saved to::
+    Indicator charts are saved to::
 
         companies/<SYMBOL>/<run_timestamp>/technical/graphs/
 
-    Parameters
-    ----------
-    history_payload:
-        Raw FYERS history payload (dict with ``candles`` / ``Candels`` key).
-    symbol:
-        Trading symbol used for file naming and path construction.
-    run_timestamp:
-        Reuse an existing run directory (e.g. from the same pipeline run).
-        If *None*, a new timestamped directory is created.
-    root:
-        Override the ``companies/`` root directory.
-    config:
-        Indicator configuration; defaults to :class:`IndicatorConfig` defaults.
-    indicator_names:
-        Subset of indicator names to generate.  Defaults to all six:
-        ``ema``, ``rsi``, ``macd``, ``bollinger``, ``atr``, ``rvol``.
+    Per-style trade setup charts are saved to::
+
+        companies/<SYMBOL>/<run_timestamp>/technical/setups/<style_name>/
     """
     raw_candles = extract_candles(history_payload)
     if not raw_candles:
@@ -393,16 +505,32 @@ def generate_indicator_graphs(
         raise ValueError(f"generate_indicator_graphs: empty DataFrame after parsing candles for {symbol!r}")
 
     series = calculate_indicator_series(df, config=config)
-
+    safe_symbol = normalise_symbol(symbol)
 
     names = list(indicator_names) if indicator_names is not None else list(_CHART_FNS.keys())
-
     out_paths: list[Path] = []
+
+    # 1. Standard indicator charts  → technical/graphs/
     for name in names:
         chart_fn = _CHART_FNS.get(name)
         if chart_fn is None:
             continue
         out_path = output_indicator_graph_path(symbol, run_timestamp, root=root, indicator_name=name)
         out_paths.append(chart_fn(df, series, symbol, out_path))
+
+    # 2. Per-style trade setup charts  → technical/setups/<style_name>/
+    if setups:
+        graphs_dir = output_indicator_graph_dir(symbol, run_timestamp, root=root)
+        technical_dir = graphs_dir.parent  # one level up from graphs/
+        for style_name, style_data in setups.items():
+            setup = style_data.get("setup") if isinstance(style_data, dict) else None
+            if not setup or not setup.get("entry"):
+                continue  # skip styles that were rejected
+            style_dir = technical_dir / "setups" / style_name
+            style_dir.mkdir(parents=True, exist_ok=True)
+            out_path = style_dir / f"{safe_symbol}_{style_name}_setup.png"
+            out_paths.append(
+                _chart_trade_setup_for_style(df, series, symbol, out_path, style_name, setup)
+            )
 
     return out_paths

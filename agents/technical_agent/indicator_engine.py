@@ -140,6 +140,106 @@ def _vwap(df: pd.DataFrame) -> pd.Series:
     return cum_tp_vol / cum_vol.replace(0, np.nan)
 
 
+def _session_vwap(df: pd.DataFrame) -> pd.Series:
+    """Session-anchored VWAP — resets at the start of each trading day.
+
+    Requires a 'datetime' column (tz-naive, IST assumed).  If the dataframe
+    spans multiple calendar days the VWAP resets at 09:15 of each day so
+    intraday price action always has an accurate institutional reference.
+    """
+    if "datetime" not in df.columns or df.empty:
+        return _vwap(df)  # graceful fallback
+
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    tp_vol = typical * df["volume"]
+
+    # Determine the session date: bars between 09:15 and 15:30 belong to that
+    # calendar date.  Bars before 09:15 are attributed to the previous session.
+    dates = pd.to_datetime(df["datetime"])
+    session_key = dates.dt.date.astype(str) + "_" + (
+        # bars before 09:15 get pushed to the 'previous' key so they don't
+        # reset the accumulator mid-session
+        (dates.dt.hour * 60 + dates.dt.minute >= 9 * 60 + 15)
+        .cumsum()
+        .astype(str)
+    )
+
+    cum_tp_vol = tp_vol.groupby(session_key).cumsum()
+    cum_vol = df["volume"].groupby(session_key).cumsum()
+    return cum_tp_vol / cum_vol.replace(0, np.nan)
+
+
+def _vwap_bands(df: pd.DataFrame) -> pd.DataFrame:
+    """VWAP Standard Deviation Bands (±1σ, ±2σ).
+
+    Returns a DataFrame with columns: vwap, upper_1sd, lower_1sd,
+    upper_2sd, lower_2sd.  These act as dynamic mean-reversion zones
+    used by institutional prop desks for entry/exit.
+    """
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    vol = df["volume"].replace(0, np.nan)
+    cum_vol = vol.cumsum()
+    cum_tp_vol = (typical * vol).cumsum()
+    vwap = cum_tp_vol / cum_vol
+
+    # Variance: Σ(weight × (price − vwap)²) / Σ(weight)
+    cum_var = ((typical - vwap) ** 2 * vol).cumsum() / cum_vol
+    sd = np.sqrt(cum_var.clip(lower=0))
+
+    return pd.DataFrame({
+        "vwap": vwap,
+        "upper_1sd": vwap + 1 * sd,
+        "lower_1sd": vwap - 1 * sd,
+        "upper_2sd": vwap + 2 * sd,
+        "lower_2sd": vwap - 2 * sd,
+    })
+
+
+def calc_initial_balance(
+    df: pd.DataFrame,
+    ib_minutes: int = 60,
+) -> Dict[str, float | None]:
+    """Calculate the Initial Balance (first N minutes of the trading session).
+
+    The Initial Balance High/Low defines the "auction range" set in the
+    opening period.  A breakout above IB_High = bullish impulse; below
+    IB_Low = bearish.  Requires a 'datetime' column.
+
+    Args:
+        df: OHLCV DataFrame with a 'datetime' column (tz-naive, IST).
+        ib_minutes: Duration of the initial balance period in minutes (default: 60).
+
+    Returns:
+        Dict with keys: ib_high, ib_low, ib_midpoint, ib_range.
+    """
+    if "datetime" not in df.columns or df.empty:
+        return {"ib_high": None, "ib_low": None, "ib_midpoint": None, "ib_range": None}
+
+    dates = pd.to_datetime(df["datetime"])
+    # Find the most recent trading day in the data
+    last_date = dates.dt.date.max()
+
+    # Market open: 09:15 IST
+    session_open = pd.Timestamp(f"{last_date} 09:15:00")
+    ib_end = session_open + pd.Timedelta(minutes=ib_minutes)
+
+    ib_bars = df[(dates >= session_open) & (dates < ib_end)]
+    if ib_bars.empty:
+        return {"ib_high": None, "ib_low": None, "ib_midpoint": None, "ib_range": None}
+
+    ib_high = float(ib_bars["high"].max())
+    ib_low = float(ib_bars["low"].min())
+    ib_mid = round((ib_high + ib_low) / 2, 2)
+    ib_range = round(ib_high - ib_low, 2)
+
+    return {
+        "ib_high": round(ib_high, 2),
+        "ib_low": round(ib_low, 2),
+        "ib_midpoint": ib_mid,
+        "ib_range": ib_range,
+    }
+
+
 def _adx(df: pd.DataFrame, period: int) -> pd.DataFrame:
     tr = pd.concat([
         df["high"] - df["low"],
@@ -311,6 +411,9 @@ def calculate_indicator_series(
     don55 = _donchian(df, cfg.donchian_long)
     volume_ma = volumes.rolling(window=cfg.rvol_period, min_periods=1).mean()
 
+    vwap_b = _vwap_bands(df)
+    sv = _session_vwap(df)
+
     return {
         "ema20": ema20,
         "ema50": ema50,
@@ -333,6 +436,13 @@ def calculate_indicator_series(
         "obv": _obv(df),
         "mfi": _mfi(df, cfg.mfi_period),
         "vwap": _vwap(df),
+        "session_vwap": sv,
+        "vwap_bands": {
+            "upper_1sd": vwap_b["upper_1sd"],
+            "lower_1sd": vwap_b["lower_1sd"],
+            "upper_2sd": vwap_b["upper_2sd"],
+            "lower_2sd": vwap_b["lower_2sd"],
+        },
         "rvol": volumes / volume_ma,
         "adx": {"adx": adx_df["adx"], "di_plus": adx_df["di_plus"], "di_minus": adx_df["di_minus"]},
         "supertrend": {"supertrend": st_df["supertrend"], "direction": st_df["direction"]},
@@ -469,6 +579,16 @@ def calculate_indicators(
         "obv": _last_valid(obv),
         "mfi": _last_valid(mfi),
         "vwap": _last_valid(vwap),
+        # ── session vwap & bands
+        "session_vwap": _last_valid(_session_vwap(df)),
+        "vwap_bands": {
+            "upper_1sd": _last_valid(_vwap_bands(df)["upper_1sd"]),
+            "lower_1sd": _last_valid(_vwap_bands(df)["lower_1sd"]),
+            "upper_2sd": _last_valid(_vwap_bands(df)["upper_2sd"]),
+            "lower_2sd": _last_valid(_vwap_bands(df)["lower_2sd"]),
+        },
+        # ── initial balance (only meaningful for intraday TFs)
+        "initial_balance": calc_initial_balance(df),
         # ── levels
         "pivot_points": pivots,
         "52w": levels_52w,

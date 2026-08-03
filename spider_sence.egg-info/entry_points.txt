@@ -1,6 +1,8 @@
 [console_scripts]
 spider-fundamental = agents.fundamental_agent.pipeline:main
 spider-fundamental-report = agents.fundamental_agent.report_generator:main
-spider-mcp = orchestrator.mcp_server:main
+spider-mcp = mcp_servers.screener_mcp.server:main
 spider-screener-enrich = agents.fundamental_agent.screener_enricher:main
 spider-screener-fetch = agents.fundamental_agent.screener_output:main
+spider-technical-eod = agents.technical_agent.eod_scanner:cli
+spider-technical-live = agents.technical_agent.live_scanner:main

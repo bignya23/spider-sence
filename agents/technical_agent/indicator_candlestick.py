@@ -58,8 +58,8 @@ _RVOL_MED  = "#0284c7"
 _RVOL_HIGH = "#ea580c"
 
 _DPI = 160
-_W   = 16
-_H   = 7
+_W   = 20
+_H   = 8
 
 _DEFAULT_COMPANIES_ROOT = Path(__file__).resolve().parents[2] / "companies"
 
@@ -96,14 +96,19 @@ def _apply_style(ax: plt.Axes, fig: plt.Figure) -> None:
     ax.tick_params(colors=_TEXT, labelsize=8)
     for spine in ax.spines.values():
         spine.set_color(_GRID)
-    ax.title.set_color(_TEXT)
+    ax.tick_params(axis="y", colors=_TEXT, direction="in", length=3)
+    
+    # Move y-axis to the right side
+    ax.yaxis.tick_right()
+    ax.yaxis.set_label_position("right")
+    
     ax.xaxis.label.set_color(_TEXT)
     ax.yaxis.label.set_color(_TEXT)
 
 
 def _draw_candlesticks(ax: plt.Axes, df: pd.DataFrame) -> None:
     """Render OHLC candlesticks on *ax* using the DataFrame's integer x positions."""
-    width = 0.6
+    width = 0.45
     for i, row in df.iterrows():
         color = _UP if row["close"] >= row["open"] else _DOWN
         ax.vlines(i, row["low"], row["high"], color=color, linewidth=0.8, zorder=2)
@@ -125,9 +130,20 @@ def _x_date_ticks(ax: plt.Axes, df: pd.DataFrame, n: int = 12) -> None:
     positions = list(range(0, len(df), step))
     if positions and positions[-1] != len(df) - 1:
         positions.append(len(df) - 1)
-    labels = [df.loc[p, "time"].strftime("%b %d") for p in positions]
+        
+    if len(df) >= 2:
+        diff_minutes = (df["time"].iloc[1] - df["time"].iloc[0]).total_seconds() / 60
+        is_intraday = diff_minutes < 1440
+    else:
+        is_intraday = False
+        
+    if is_intraday:
+        labels = [df.loc[p, "time"].strftime("%b %d\n%H:%M") for p in positions]
+    else:
+        labels = [df.loc[p, "time"].strftime("%b %d\n%Y") for p in positions]
+        
     ax.set_xticks(positions)
-    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=7, color=_TEXT)
+    ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=7, color=_TEXT)
 
 
 def _save(fig: plt.Figure, output_path: Path) -> Path:
@@ -377,17 +393,35 @@ def _chart_trade_setup_for_style(
     ax.axhline(entry, color="#334155", linestyle="-",  linewidth=1.6, alpha=0.9, label=f"Entry   {entry}  ({setup.get('entry_level', '')}")
     ax.axhline(sl, color=_DOWN, linestyle="--", linewidth=1.3, alpha=0.9, label=f"Stop    {sl}  ({setup.get('stop_level', '')}")
 
-    # Right-side text annotations
+    # Right-side text annotations (pushed right to avoid overlap)
     bbox = dict(boxstyle="round,pad=0.3", fc=_BG, ec=_GRID, alpha=0.92)
-    xlast = len(df) + 0.5
+    xlast = len(df) + 3.0
     ax.text(xlast, tp,    f" TP  {tp}\n+₹{per_share_reward:.2f}/share",  color=_UP,     va="center", fontsize=8.5, bbox=bbox)
     ax.text(xlast, entry, f" ENTRY  {entry}",                              color="#334155",va="center", fontsize=8.5, bbox=bbox)
     ax.text(xlast, sl,    f" SL  {sl}\n-₹{per_share_risk:.2f}/share",    color=_DOWN,   va="center", fontsize=8.5, bbox=bbox)
+    
+    # Current Price Marker
+    current_close = df["close"].iloc[-1]
+    curr_color = _UP if current_close >= df["open"].iloc[-1] else _DOWN
+    ax.axhline(current_close, color=curr_color, linestyle=":", linewidth=1.2, alpha=0.7)
+    price_bbox = dict(boxstyle="round,pad=0.2", fc=curr_color, ec=curr_color, alpha=0.9)
+    # Plot against the right Y-axis spine exactly like TradingView
+    ax.annotate(f" {current_close:.2f} ", 
+                xy=(1, current_close), 
+                xycoords=('axes fraction', 'data'),
+                xytext=(3, 0), textcoords='offset points',
+                color=_BG, va="center", ha="left", fontsize=8.5, fontweight="bold", bbox=price_bbox, annotation_clip=False)
 
     direction = "LONG ▲" if bias == "bullish" else "SHORT ▼"
-    ax.set_xlim(-1, len(df) + 12)
+    
+    tf_str = ""
+    if len(df) >= 2:
+        diff_minutes = (df["time"].iloc[1] - df["time"].iloc[0]).total_seconds() / 60
+        tf_str = f" ({int(diff_minutes)}m)" if diff_minutes < 60 else f" ({int(diff_minutes//60)}h)" if diff_minutes < 1440 else " (1D)"
+        
+    ax.set_xlim(-1, len(df) + 55)  # Huge space on the right for annotations and breathing room
     ax.set_title(
-        f"{symbol}  —  {style_name.upper()} Setup  |  {direction}  |  RR: {rr}×",
+        f"{symbol}  —  {style_name.upper()} Setup{tf_str}  |  {direction}  |  RR: {rr}×",
         color=_TEXT, fontsize=13, fontweight="bold",
     )
     ax.set_ylabel("Price", color=_TEXT)

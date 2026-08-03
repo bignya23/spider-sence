@@ -88,7 +88,7 @@ class BatchIndicatorEngine:
             "1d": d1_df
         }
 
-    def _process_single(self, symbol: str, df: pd.DataFrame) -> Dict[str, Any] | None:
+    def _process_single(self, symbol: str, df: pd.DataFrame, context: Dict[str, Any] = None) -> Dict[str, Any] | None:
         """Process a single symbol. Designed to be run in a separate process."""
         try:
             if df.empty or len(df) < 55:  # Need at least 55 for Donchian 55
@@ -108,14 +108,62 @@ class BatchIndicatorEngine:
                 "m5": ind_m5
             }
             
-            result = generate_signals(timeframes, {}, config=self.signal_config)
+            result = generate_signals(timeframes, {}, config=self.signal_config, context=context)
             
             # Filter to see if any actionable setups were found
             valid_setups = {k: v for k, v in result["style_setups"].items() if v.get("setup")}
             
+            # Generate Interactive Graph for the detected timeframe
+            if valid_setups:
+                try:
+                    from datetime import datetime
+                    from pathlib import Path
+                    from .indicator_candlestick import generate_indicator_graphs
+                    from .trading_styles import TRADING_STYLES
+                    
+                    safe_sym = symbol.replace(":", "_")
+                    today_str = datetime.now().strftime("%Y%m%d")
+                    
+                    for style, style_data in valid_setups.items():
+                        entry_tf = TRADING_STYLES[style].entry_tf
+                        entry_df = resampled[entry_tf]
+                        if not entry_df.empty:
+                            candles_list = entry_df[["timestamp", "open", "high", "low", "close", "volume"]].values.tolist()
+                            
+                            generate_indicator_graphs(
+                                history_payload={"candles": candles_list},
+                                symbol=symbol,
+                                run_timestamp=today_str,
+                                root=Path("companies"),
+                                indicator_names=[],
+                                setups={style: style_data}
+                            )
+                            
+                            import json
+                            setup_dir = Path("companies") / safe_sym / today_str / "technical" / "setups" / style
+                            setup_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            json_data = {
+                                "symbol": symbol,
+                                "style": style,
+                                "regime": result.get("regime"),
+                                "bias": result.get("confluence", {}).get("dominant_bias"),
+                                "summary": result.get("summary"),
+                                "details": style_data
+                            }
+                            
+                            json_file = setup_dir / f"{safe_sym}_{style}_setup.json"
+                            with open(json_file, "w") as f:
+                                json.dump(json_data, f, indent=4)
+
+                except Exception as e:
+                    logger.error(f"Failed to generate graph for {symbol}: {e}", exc_info=True)
+            
+            
             return {
                 "symbol": symbol,
                 "regime": result["regime"],
+                "bias": result["confluence"]["dominant_bias"],
                 "adx": result["adx"],
                 "confluence": result["confluence"]["score"],
                 "setups_found": len(valid_setups),
@@ -123,7 +171,7 @@ class BatchIndicatorEngine:
                 "summary": result["summary"]
             }
         except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
+            logger.error(f"Error processing {symbol}: {e}", exc_info=True)
             return None
 
     def batch_screen(self, symbols: List[str] | None = None) -> List[Dict[str, Any]]:
@@ -132,14 +180,35 @@ class BatchIndicatorEngine:
             symbols = list(self.histories.keys())
             
         results = []
+        global_context = {}
+        
+        # 1. Process indices first to establish global context
+        from .index_mapper import MAJOR_INDICES, get_parent_index
+        for idx_sym in MAJOR_INDICES:
+            if idx_sym in symbols and idx_sym in self.histories:
+                df = self.histories[idx_sym]
+                idx_res = self._process_single(idx_sym, df, context=None)
+                if idx_res:
+                    global_context[idx_sym] = {
+                        "regime": idx_res["regime"],
+                        "bias": idx_res["bias"]
+                    }
+                    results.append(idx_res)
+                    
+        # 2. Process stocks concurrently with index context
         
         # Use ThreadPoolExecutor because ProcessPoolExecutor cannot be spawned from daemon threads (WebSocket threads)
         with ThreadPoolExecutor() as executor:
             futures = []
             for sym in symbols:
+                if sym in MAJOR_INDICES:
+                    continue # Already processed
+                    
                 df = self.histories.get(sym)
                 if df is not None:
-                    futures.append(executor.submit(self._process_single, sym, df))
+                    parent_idx = get_parent_index(sym)
+                    stock_context = global_context.get(parent_idx, None)
+                    futures.append(executor.submit(self._process_single, sym, df, stock_context))
             
             for future in futures:
                 res = future.result()

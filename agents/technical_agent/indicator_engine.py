@@ -220,7 +220,7 @@ def calc_initial_balance(
     last_date = dates.dt.date.max()
 
     # Market open: 09:15 IST
-    session_open = pd.Timestamp(f"{last_date} 09:15:00")
+    session_open = pd.Timestamp(f"{last_date} 09:15:00", tz="Asia/Kolkata")
     ib_end = session_open + pd.Timedelta(minutes=ib_minutes)
 
     ib_bars = df[(dates >= session_open) & (dates < ib_end)]
@@ -524,6 +524,10 @@ def calculate_indicators(
     adx_trend = "strong" if adx_val and adx_val > 25 else "weak" if adx_val and adx_val < 20 else "moderate"
 
     return {
+        "close": _last_valid(df["close"]),
+        "open": _last_valid(df["open"]),
+        "high": _last_valid(df["high"]),
+        "low": _last_valid(df["low"]),
         # ── trend
         "ema20": _last_valid(ema20),
         "ema50": _last_valid(ema50),

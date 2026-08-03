@@ -29,7 +29,7 @@ from .trading_styles import TRADING_STYLES, TradingStyleProfile
 class SignalConfig:
     min_rr: float = 1.5           # absolute minimum RR to generate any setup
     atr_stop_mult: float = 1.5    # stop = entry ± (1.5 × ATR) — upgraded from 1.0
-    rvol_threshold: float = 1.5   # RVOL must be above this multiple (hard gate)
+    rvol_threshold: float = 1.2   # RVOL must be above this multiple (hard gate)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ def _step1_trend_filter(
         adx_str = f"{adx_val:.1f}" if adx_val is not None else "N/A"
         return (
             False, "ranging", regime,
-            f"Regime '{regime}' (ADX={adx_str}) not valid for {style.display_name} "
+            f"Global regime '{regime}' not valid for {style.display_name} "
             f"[valid: {', '.join(style.valid_regimes)}]"
         )
 
@@ -173,7 +173,7 @@ def _step1_trend_filter(
     if regime in ("trending", "transition"):
         ema200 = _v(bias_tf_ind, "ema200")
         vwap = _v(bias_tf_ind, "vwap") or _v(bias_tf_ind, "session_vwap")
-        price_ref = _v(bias_tf_ind, "ema20") or vwap or ema200
+        price_ref = _v(bias_tf_ind, "close") or _v(bias_tf_ind, "ema20") or vwap or ema200
 
         if price_ref and ema200:
             if direction == "bullish" and price_ref < ema200:
@@ -224,7 +224,7 @@ def _step2_structural_check(
     if not atr:
         return False, "ATR not available — cannot assess structural proximity"
 
-    price = _v(entry_tf_ind, "vwap") or _v(entry_tf_ind, "ema20")
+    price = _v(entry_tf_ind, "close") or _v(entry_tf_ind, "vwap") or _v(entry_tf_ind, "ema20")
     if not price:
         return False, "No price reference available"
 
@@ -297,6 +297,7 @@ def _step3_momentum_trigger(
     direction: str,
     regime: str,
     config: SignalConfig,
+    context: Dict[str, Any] = None,
 ) -> Tuple[bool, str]:
     """Step 3: Momentum + Volume Confirmation Gate.
 
@@ -308,6 +309,17 @@ def _step3_momentum_trigger(
     """
     reasons: list[str] = []
     blocks: list[str] = []
+
+    # ── Index Correlation Check ──────────────────────────────────────────────
+    if context:
+        idx_bias = context.get("bias", "neutral").lower()
+        if direction == "bullish" and idx_bias == "bearish":
+            blocks.append("Blocked by Index: Market is trending bearish")
+        elif direction == "bearish" and idx_bias == "bullish":
+            blocks.append("Blocked by Index: Market is trending bullish")
+            
+    if blocks:
+        return False, f"Sector Correlation failed: {'; '.join(blocks)}"
 
     # ── Hard Gate 1: Relative Volume ─────────────────────────────────────────
     rvol = _v(entry_tf_ind, "rvol")
@@ -399,7 +411,7 @@ def _find_entry_and_levels(
     Returns entry, stop (1.5×ATR), target, rr, trail_via, or None.
     """
     atr = _v(entry_tf_ind, "atr")
-    current_price = _v(entry_tf_ind, "vwap") or _v(entry_tf_ind, "session_vwap") or _v(entry_tf_ind, "ema20")
+    current_price = _v(entry_tf_ind, "close") or _v(entry_tf_ind, "vwap") or _v(entry_tf_ind, "ema20")
     if not atr or not current_price:
         return None
 
@@ -786,6 +798,7 @@ def generate_signals(
     timeframes: Dict[str, Dict[str, Any]],
     patterns: Dict[str, Any],
     config: SignalConfig | None = None,
+    context: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """Generate a comprehensive signal report using the 4-step hierarchical filter.
 
@@ -863,7 +876,7 @@ def generate_signals(
 
         # ── STEP 3: Momentum + Volume Trigger ────────────────────────────────
         passed3, trigger_desc = _step3_momentum_trigger(
-            entry_tf_data, direction, regime, cfg
+            entry_tf_data, direction, regime, cfg, context
         )
         if not passed3:
             style_setups[style_name] = {

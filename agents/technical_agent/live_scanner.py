@@ -41,6 +41,7 @@ class LiveScanner:
         self.engine = BatchIndicatorEngine()
         self.dispatcher = SignalDispatcher()
         self.pre_gate = UniversePreGate()
+        self.active_positions: Dict[str, dict] = {}
         
         self.cfg = load_config()
         if not self.cfg.client_id or not self.cfg.access_token:
@@ -125,10 +126,39 @@ class LiveScanner:
         
         if not ltp:
             return
-            
+        
         logger.debug(f"Tick received for {sym}: {ltp} (Vol: {vol_traded})")
+        
+        # ── STORE RAW TICK ──
+        self.dispatcher.dispatch_tick(sym, message)
 
-        now = int(time.time())
+        # ── TICK-LEVEL RISK MANAGEMENT ──
+        if ltp and sym in self.active_positions:
+            pos = self.active_positions[sym]
+            direction = pos.get("direction")
+            stop = pos.get("stop")
+            target = pos.get("target")
+            
+            triggered = False
+            exit_reason = ""
+            
+            if direction == "long":
+                if stop and ltp <= stop:
+                    triggered, exit_reason = True, "Stop Loss Hit"
+                elif target and ltp >= target:
+                    triggered, exit_reason = True, "Take Profit Hit"
+            elif direction == "short":
+                if stop and ltp >= stop:
+                    triggered, exit_reason = True, "Stop Loss Hit"
+                elif target and ltp <= target:
+                    triggered, exit_reason = True, "Take Profit Hit"
+                    
+            if triggered:
+                self.dispatcher.dispatch_exit(sym, exit_reason, ltp, pos)
+                del self.active_positions[sym]
+
+        exch_time = message.get("exch_feed_time") or message.get("last_traded_time")
+        now = int(exch_time) if exch_time else int(time.time())
         # Determine current 5m boundary (e.g. 09:15, 09:20)
         boundary = now - (now % 300)
         
@@ -186,6 +216,14 @@ class LiveScanner:
         for r in results:
             if r["setups_found"] > 0:
                 self.dispatcher.dispatch(r)
+                
+                # Add to active positions for tick-level tracking
+                # Priority: Scalp > Intraday > Swing
+                for style in ["scalp", "intraday", "swing", "mean_reversion", "positional"]:
+                    if style in r["setups"]:
+                        self.active_positions[r["symbol"]] = r["setups"][style]
+                        logger.info(f"Registered {style} active position for {r['symbol']}")
+                        break
 
     def execute_pre_gate(self) -> None:
         """Runs the 09:30 AM Universe Pre-Gate and unsubscribes from rejected symbols."""
@@ -225,11 +263,11 @@ class LiveScanner:
         except KeyboardInterrupt:
             logger.info("Shutting down Live Scanner...")
         
-if __name__ == "__main__":
+def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Spider-Sence Live Scanner — Fyers WebSocket"
+        description="Live Technical Agent Scanner"
     )
     parser.add_argument(
         "--symbols",
@@ -268,6 +306,15 @@ if __name__ == "__main__":
         logger.error("Error: You must provide either --symbols or --txt-file")
         exit(1)
 
+    # Ensure major indices are always present for Sector Correlation Rules
+    from agents.technical_agent.index_mapper import MAJOR_INDICES
+    for idx in MAJOR_INDICES:
+        if idx not in symbols:
+            symbols.append(idx)
+
     logger.info(f"Symbols loaded ({len(symbols)}): {symbols}")
     scanner = LiveScanner(symbols)
     scanner.run()
+
+if __name__ == "__main__":
+    main()

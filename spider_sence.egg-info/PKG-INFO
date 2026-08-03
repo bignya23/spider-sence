@@ -111,14 +111,17 @@ python3 -m agents.fundamental_agent.screener_enricher RELIANCE
 
 ### Output
 
-All exports are saved under `agents/fundamental_agent/exports/<SYMBOL>/`:
+Each run writes to `companies/<SYMBOL>/<RUN_TIMESTAMP>/`, where the timestamp is
+formatted as `YYYYMMDD_HHMMSS_UTC`.
 
-| File | Description |
-|---|---|
-| `<SYMBOL>.xlsx` | Raw screener.in data in Excel format |
-| `<symbol>.jsonl` | One JSON object per metric/period (for embeddings) |
-| `<SYMBOL>_derived.json` | Computed derivatives + raw baseline inputs + field definitions |
-| `<SYMBOL>_fundamental_report.md` | LLM-generated fundamental analysis report (Markdown) |
+- `fundamental/`
+  - `<SYMBOL>.xlsx` — Raw screener.in export in Excel format.
+  - `<symbol>.jsonl` — One JSON object per metric/period (for embeddings or search).
+  - `<SYMBOL>_derived.json` — Computed fundamentals plus raw baseline inputs.
+  - `<SYMBOL>_fundamental_report.md` — LLM-generated Markdown report (when enabled).
+- `technical/`
+  - `<SYMBOL>_candles.png` — Candlestick chart rendered via Matplotlib.
+  - `<SYMBOL>_interactive.html` — Plotly-based interactive chart (when generated).
 
 The derived JSON contains:
 
@@ -149,7 +152,8 @@ spider-sence/
 │       ├── prompt_template.py     # LLM prompt templates for report generation
 │       ├── report_generator.py    # Stage 3: LLM report generation
 │       ├── pipeline.py            # Orchestrates all stages
-│       └── exports/               # Generated output files
+│       └── exports/               # (legacy) retained for compatibility
+├── companies/                     # Runtime outputs grouped by symbol/run
 ├── orchestrator/
 │   ├── __init__.py
 │   ├── llm_config.py              # LLM configuration (env vars / JSON file)
@@ -176,7 +180,7 @@ client) can call directly — no need to run CLI commands manually.
   "mcpServers": {
     "spider-sence": {
       "command": "python3",
-      "args": ["-m", "orchestrator.mcp_server"],
+      "args": ["-m", "mcp_servers.screener_mcp.server"],
       "cwd": "/Users/bignyagogoi/Desktop/spider-sence"
     }
   }
@@ -192,11 +196,21 @@ client) can call directly — no need to run CLI commands manually.
 
 | Tool | Description |
 |---|---|
-| `fetch_company` | Fetch company data from screener.in |
-| `enrich_fundamentals` | Compute derived fundamentals from JSONL |
-| `generate_report` | Generate LLM fundamental analysis report |
-| `run_full_pipeline` | Run all three stages (fetch + enrich + report) |
-| `get_derived_data` | Read existing derived JSON for a symbol |
+| `run_pipeline` | Fetch & enrich Screener data, optionally generate report |
+| `compute_derivatives` | Compute derived fundamentals from existing JSONL |
+| `generate_report` | Generate an LLM fundamental analysis report |
+
+### Cline-Based Report Generation (No API Key Needed)
+
+The `cline-free/glm-5.2` model is only available through the Cline extension,
+not via external API. To generate reports using Cline's free model:
+
+1. Cline calls `enrich_fundamentals` (or `fetch_company` first if data doesn't exist)
+2. Cline calls `get_analysis_prompt` to get the system prompt + derived data
+3. **Cline generates the report itself** using its own LLM (e.g. `cline-free/glm-5.2`)
+4. Cline calls `save_report` to save the generated Markdown report
+
+This means **no API key is needed** — Cline IS the LLM.
 
 ## Dependencies
 
@@ -207,3 +221,25 @@ client) can call directly — no need to run CLI commands manually.
 - `lxml` — XML/HTML parser backend
 - `openai` — LLM API client (for report generation)
 - `mcp` — Model Context Protocol server (for Cline integration)
+- `numpy` — Numerical support for indicator calculations
+
+## Technical Agent Overview
+
+The technical agent implements a strict “data → indicators → patterns” flow, leaving all numeric work to Pandas/Numpy and reserving LLMs for commentary only:
+
+1. **Market MCP Fetch** – multi-timeframe OHLCV data (`daily`, `hourly`, `15m`) plus optional index/sector quotes via the FYERS-backed MCP tools.
+2. **Indicator Engine** (`agents/technical_agent/indicator_engine.py`) – computes EMA(20/50/200), MACD, RSI, ATR, Bollinger Bands, and relative volume snapshots for each timeframe.
+3. **Pattern Engine** (`agents/technical_agent/pattern_engine.py`) – detects breakouts, double bottoms, cup & handle, ascending triangles, and basic support/resistance using rule-based heuristics.
+
+`agents/technical_agent/technical_agent.py` orchestrates these steps asynchronously (`TechnicalAgent.analyse` / `run_basic_analysis`). Downstream LLM layers can then focus purely on interpreting the structured results.
+- `numpy` — Numerical support for indicator calculations
+
+## Technical Agent
+
+The technical agent orchestrates a three-stage workflow without offloading any calculations to the LLM:
+
+1. **Market MCP Fetch** – retrieves multi-timeframe OHLCV data (`daily`, `hourly`, `15m`) and optional index/sector context via the FYERS-backed MCP tools (`get_history`, `get_quote`).
+2. **Indicator Engine (Pandas)** – `agents/technical_agent/indicator_engine.py` derives EMA(20/50/200), MACD, RSI, ATR, Bollinger Bands, and relative volume snapshots per timeframe.
+3. **Pattern Engine** – `agents/technical_agent/pattern_engine.py` performs rule-based pattern scans (breakout, double bottom, cup & handle, ascending triangle, support/resistance) on the enriched data.
+
+`agents/technical_agent/technical_agent.py` ties these stages together, exposing `TechnicalAgent.analyse()` (async) and a `run_basic_analysis()` helper. Downstream LLMs can then focus purely on interpreting the structured output instead of crunching indicators.

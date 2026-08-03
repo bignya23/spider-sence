@@ -63,8 +63,8 @@ TRADING_STYLES: Dict[str, TradingStyleProfile] = {
         entry_tf="m5",
         min_confluence=4.0,
         min_adx=25.0,
-        min_rr=1.5,
-        valid_regimes=("trending",),
+        min_rr=1.2,
+        valid_regimes=("trending", "transition"),
         graph_folder="setups/scalp",
     ),
     "intraday": TradingStyleProfile(
@@ -72,10 +72,10 @@ TRADING_STYLES: Dict[str, TradingStyleProfile] = {
         display_name="Intraday",
         description=(
             "Same-day trades, typically held 1-4 hours. "
-            "Uses daily for macro bias, hourly for structure, 15-min for entry. "
+            "Uses hourly for macro bias, hourly for structure, 15-min for entry. "
             "Positions must be squared off by end of session."
         ),
-        bias_tf="daily",
+        bias_tf="hourly",
         structure_tf="hourly",
         entry_tf="m15",
         min_confluence=3.0,

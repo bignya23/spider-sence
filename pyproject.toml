@@ -20,6 +20,10 @@ spider-screener-fetch = "agents.fundamental_agent.screener_output:main"
 spider-screener-enrich = "agents.fundamental_agent.screener_enricher:main"
 spider-mcp = "mcp_servers.screener_mcp.server:main"
 
+# Technical Agent CLI commands
+spider-technical-live = "agents.technical_agent.live_scanner:main"
+spider-technical-eod = "agents.technical_agent.eod_scanner:cli"
+
 [tool.setuptools.packages.find]
 include = ["agents*", "orchestrator*", "mcp_servers*", "data*"]
 

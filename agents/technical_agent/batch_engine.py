@@ -66,7 +66,12 @@ class BatchIndicatorEngine:
         if df.empty or "datetime" not in df.columns:
             return {"m5": df, "m15": pd.DataFrame(), "1h": pd.DataFrame(), "1d": pd.DataFrame()}
         
-        # We must use the datetime column as index for resampling
+        df = df.copy()
+        
+        # Force all values to UTC (coercing both naive and aware), then strip timezone.
+        # This completely eliminates any mixed-type arrays from pd.concat
+        df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+        
         df_idx = df.set_index("datetime")
         agg_dict = {
             "timestamp": "last",
@@ -124,6 +129,19 @@ class BatchIndicatorEngine:
                     safe_sym = symbol.replace(":", "_")
                     today_str = datetime.now().strftime("%Y%m%d")
                     
+                    logger.info(f"\n" + "="*50)
+                    logger.info(f"🔥 LIVE SETUP DETECTED: {symbol}")
+                    logger.info("="*50)
+                    for style, data in valid_setups.items():
+                        dir_str = data.get("direction", "UNKNOWN").upper()
+                        logger.info(f"[{style.upper()}] -> {dir_str}")
+                    logger.info("-" * 50)
+                    summary_text = result.get("summary", "")
+                    for line in summary_text.split("\n"):
+                        if line.strip():
+                            logger.info(line)
+                    logger.info("="*50 + "\n")
+                    
                     for style, style_data in valid_setups.items():
                         entry_tf = TRADING_STYLES[style].entry_tf
                         entry_df = resampled[entry_tf]
@@ -158,7 +176,8 @@ class BatchIndicatorEngine:
 
                 except Exception as e:
                     logger.error(f"Failed to generate graph for {symbol}: {e}", exc_info=True)
-            
+            else:
+                logger.info(f"⚪ No valid setups found for {symbol} during this scan.")
             
             return {
                 "symbol": symbol,

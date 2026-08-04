@@ -69,6 +69,7 @@ class LiveScanner:
         # Aggregation state
         self.current_candles: Dict[str, Dict[str, Any]] = {}
         self.last_candle_ts: int = 0
+        self.tick_count: int = 0
         
     def _normalize_symbol(self, sym: str) -> str:
         # Fyers requires NSE:SYMBOL-EQ format
@@ -127,6 +128,10 @@ class LiveScanner:
         if not ltp:
             return
         
+        self.tick_count += 1
+        if self.tick_count % 500 == 0:
+            logger.info(f"System Check: Received {self.tick_count} ticks so far... (Waiting for next 5m boundary)")
+            
         logger.debug(f"Tick received for {sym}: {ltp} (Vol: {vol_traded})")
         
         # ── STORE RAW TICK ──
@@ -187,7 +192,7 @@ class LiveScanner:
         if sym not in self.current_candles:
             self.current_candles[sym] = {
                 "timestamp": boundary,
-                "datetime": pd.to_datetime(boundary, unit="s"),
+                "datetime": pd.to_datetime(boundary, unit="s", utc=True).tz_convert("Asia/Kolkata"),
                 "open": ltp,
                 "high": ltp,
                 "low": ltp,

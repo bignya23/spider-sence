@@ -6,22 +6,20 @@ Synthesises raw indicator values into actionable trading signals using a
 Step 1: Trend & Regime Filter    — defines market environment (trending / ranging)
 Step 2: Structural Level Check   — ensures price is near a meaningful S/R zone
 Step 3: Momentum + Volume Trigger — hard volume confirmation gate (lie detector)
-Step 4: Dynamic Risk Management  — 1.5× ATR stop + Supertrend trailing exit
+Step 4: Dynamic Risk Management  — 1.5x ATR stop + Supertrend trailing exit
 
 Philosophy:
   - A trade is ONLY generated when ALL 4 gates pass sequentially
   - ADX < 20 activates Mean Reversion mode (Bollinger/VWAP bounce logic)
   - ADX > 25 activates Trend Following mode (breakout/continuation logic)
-  - RVOL > 1.5× is a HARD gate — no signal fires without volume confirmation
-  - Stop = 1.5× ATR; trailing stop via Supertrend line
+  - RVOL > 1.2x is a HARD gate — no signal fires without volume confirmation
+  - Stop = 1.5x ATR; trailing stop via Supertrend line
   - Position sizing left to the user; outputs per-share risk/reward ₹ amounts
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
 from .trading_styles import TRADING_STYLES, TradingStyleProfile
 
 
@@ -76,7 +74,7 @@ def _trend_direction(ind: Dict[str, Any]) -> str:
     ema20 = _v(ind, "ema20")
     ema50 = _v(ind, "ema50")
     ema200 = _v(ind, "ema200")
-    if ema20 and ema50 and ema200:
+    if ema20 is not None and ema50 is not None and ema200 is not None:
         if ema20 > ema50 > ema200:
             signals.append(1)
         elif ema20 < ema50 < ema200:
@@ -103,7 +101,7 @@ def _trend_direction(ind: Dict[str, Any]) -> str:
     di_plus = _v(ind, "adx", "di_plus")
     di_minus = _v(ind, "adx", "di_minus")
     adx_val = _v(ind, "adx", "adx")
-    if di_plus and di_minus and adx_val and adx_val > 20:
+    if di_plus is not None and di_minus is not None and adx_val is not None and adx_val > 20:
         signals.append(1 if di_plus > di_minus else -1)
 
     # Supertrend
@@ -116,7 +114,7 @@ def _trend_direction(ind: Dict[str, Any]) -> str:
     # Stochastic
     k = _v(ind, "stochastic", "k")
     d = _v(ind, "stochastic", "d")
-    if k and d:
+    if k is not None and d is not None:
         if k > d and k < 80:
             signals.append(1)
         elif k < d and k > 20:
@@ -173,15 +171,22 @@ def _step1_trend_filter(
     if regime in ("trending", "transition"):
         ema200 = _v(bias_tf_ind, "ema200")
         vwap = _v(bias_tf_ind, "vwap") or _v(bias_tf_ind, "session_vwap")
-        price_ref = _v(bias_tf_ind, "close") or _v(bias_tf_ind, "ema20") or vwap or ema200
+        
+        # Missing data should fail safe, don't fall back to ema200 itself
+        price_ref = _v(bias_tf_ind, "close") or _v(bias_tf_ind, "ema20") or vwap
+        
+        if price_ref is None or ema200 is None:
+            return (
+                False, direction, regime,
+                "Missing price or EMA200 data — cannot confirm trend"
+            )
 
-        if price_ref and ema200:
-            if direction == "bullish" and price_ref < ema200:
+        if direction == "bullish" and price_ref < ema200:
                 return (
                     False, direction, regime,
                     "Long trade blocked: price below 200 EMA (counter-trend)"
                 )
-            if direction == "bearish" and price_ref > ema200:
+        if direction == "bearish" and price_ref > ema200:
                 return (
                     False, direction, regime,
                     "Short trade blocked: price above 200 EMA (counter-trend)"
@@ -210,6 +215,7 @@ def _step2_structural_check(
     bias_tf_ind: Dict[str, Any],
     direction: str,
     regime: str,
+    config: SignalConfig,
 ) -> Tuple[bool, str]:
     """Step 2: Structural Level Check.
 
@@ -228,7 +234,7 @@ def _step2_structural_check(
     if not price:
         return False, "No price reference available"
 
-    proximity = atr * 1.5   # Within 1.5× ATR of a level = "at the level"
+    proximity = atr * config.atr_stop_mult   # Within configured ATR mult of a level = "at the level"
 
     boll = entry_tf_ind.get("bollinger", {}) or {}
     pivots = entry_tf_ind.get("pivot_points", {}) or bias_tf_ind.get("pivot_points", {}) or {}
@@ -388,10 +394,10 @@ def _step3_momentum_trigger(
 
     # Require at least 2 of 3 momentum confirmations: MACD, RSI, Stochastic
     momentum_count = sum([macd_ok, rsi_ok, stoch_ok])
-    if momentum_count < 1:
+    if momentum_count < 2:
         return (
             False,
-            f"Momentum gate failed: need MACD or RSI aligned — got {momentum_count}/3"
+            f"Momentum gate failed: need 2/3 indicators aligned — got {momentum_count}/3"
         )
 
     return True, " + ".join(reasons)
@@ -805,7 +811,7 @@ def generate_signals(
     Steps per trading style:
       1. Trend & Regime Filter    — regime mode + direction hard block
       2. Structural Level Check   — price must be near a meaningful S/R zone
-      3. Momentum + Volume Gate   — RVOL > 1.5× (hard) + MACD/RSI confirmation
+      3. Momentum + Volume Gate   — RVOL > 1.2× (hard) + MACD/RSI confirmation
       4. Dynamic Risk Management  — 1.5×ATR stop + Supertrend trailing exit
 
     Args:
@@ -862,7 +868,7 @@ def generate_signals(
 
         # ── STEP 2: Structural Level Check ───────────────────────────────────
         passed2, level_desc = _step2_structural_check(
-            entry_tf_data, bias_tf_data, direction, regime
+            entry_tf_data, bias_tf_data, direction, regime, cfg
         )
         if not passed2:
             style_setups[style_name] = {

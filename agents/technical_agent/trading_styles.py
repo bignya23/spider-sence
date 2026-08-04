@@ -56,7 +56,7 @@ TRADING_STYLES: Dict[str, TradingStyleProfile] = {
             "Very short-term trades held for minutes. "
             "Uses hourly for bias, 15-min for structure, 5-min for precise entry. "
             "Suited for liquid stocks with tight spreads. "
-            "Requires ADX > 25 and RVOL > 1.5x for volume confirmation."
+            "Requires ADX > 25 and RVOL > 1.2x for volume confirmation."
         ),
         bias_tf="hourly",
         structure_tf="m15",

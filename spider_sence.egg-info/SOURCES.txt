@@ -8,6 +8,8 @@ agents/sentiment_agent/__init__.py
 agents/sentiment_agent/sentiment_agent.py
 agents/sentiment_agent/sentiment_config.py
 agents/sentiment_agent/sentiment_engine.py
+agents/technical_agent/backtester.py
+agents/technical_agent/batch_backtester.py
 agents/technical_agent/batch_engine.py
 agents/technical_agent/chart_generator.py
 agents/technical_agent/eod_scanner.py

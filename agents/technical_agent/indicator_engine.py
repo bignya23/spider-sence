@@ -216,11 +216,14 @@ def calc_initial_balance(
         return {"ib_high": None, "ib_low": None, "ib_midpoint": None, "ib_range": None}
 
     dates = pd.to_datetime(df["datetime"])
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_localize(None)
+        
     # Find the most recent trading day in the data
     last_date = dates.dt.date.max()
 
     # Market open: 09:15 IST
-    session_open = pd.Timestamp(f"{last_date} 09:15:00", tz="Asia/Kolkata")
+    session_open = pd.Timestamp(f"{last_date} 09:15:00")
     ib_end = session_open + pd.Timedelta(minutes=ib_minutes)
 
     ib_bars = df[(dates >= session_open) & (dates < ib_end)]
